@@ -1,0 +1,9 @@
+﻿bin/
+obj/
+dist/
+build/
+*.log
+*.tmp
+*.user
+.DS_Store
+Thumbs.db

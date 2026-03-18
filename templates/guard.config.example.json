@@ -1,0 +1,16 @@
+﻿{
+  "guardExePath": "%USERPROFILE%\\.openclaw\\tools\\guard\\guard.exe",
+  "logDir": "%USERPROFILE%\\.openclaw\\tools\\guard\\logs",
+  "notify": {
+    "enabled": false,
+    "provider": "",
+    "webhook": "",
+    "botToken": "",
+    "chatId": ""
+  },
+  "timeouts": {
+    "watchTimeoutSec": 60,
+    "retryIntervalSec": 10,
+    "maxRetries": 3
+  }
+}
