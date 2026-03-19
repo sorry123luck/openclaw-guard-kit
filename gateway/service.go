@@ -27,6 +27,7 @@ type RequestHandler interface {
 // 现在先把结构固定下来，后面 server/client 直接复用。
 type PipeConfig struct {
 	PipeName string
+	StopFunc func()
 }
 
 func (c PipeConfig) ResolvePipeName() string {

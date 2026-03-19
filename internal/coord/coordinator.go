@@ -14,8 +14,13 @@ import (
 	"openclaw-guard-kit/logging"
 )
 
+type EventDispatcher interface {
+	Dispatch(context.Context, protocol.Event) error
+}
+
 type Coordinator struct {
 	logger       *logging.Logger
+	dispatcher   EventDispatcher
 	mu           sync.Mutex
 	targets      map[string]*targetState
 	defaultLease time.Duration
@@ -56,9 +61,10 @@ type grantResult struct {
 	response protocol.Message
 }
 
-func NewCoordinator(logger *logging.Logger) *Coordinator {
+func NewCoordinator(logger *logging.Logger, dispatcher EventDispatcher) *Coordinator {
 	return &Coordinator{
 		logger:       logger,
+		dispatcher:   dispatcher,
 		targets:      make(map[string]*targetState),
 		defaultLease: 30 * time.Second,
 	}
@@ -92,6 +98,11 @@ func (c *Coordinator) HasActiveLease(target, path, agentID string) bool {
 	c.mu.Unlock()
 
 	c.dispatchIfNeeded(pending)
+	if pending != nil {
+		c.emitFromMessage(context.Background(), pending.response, protocol.MessageWriteGranted, pending.response.Message, map[string]string{
+			"source": "lease-expire-dispatch",
+		})
+	}
 	return hasLease
 }
 
@@ -100,11 +111,12 @@ func (c *Coordinator) HandleMessage(ctx context.Context, msg protocol.Message) (
 
 	switch msg.Type {
 	case protocol.MessageWriteRequest:
+		c.emitFromMessage(ctx, msg, protocol.MessageWriteRequest, "write request received", nil)
 		return c.handleWriteRequest(ctx, msg)
 	case protocol.MessageWriteCompleted:
-		return c.handleWriteCompleted(msg)
+		return c.handleWriteCompleted(ctx, msg)
 	case protocol.MessageWriteFailed:
-		return c.handleWriteRelease(msg, false)
+		return c.handleWriteRelease(ctx, msg, false)
 	default:
 		return protocol.Message{}, fmt.Errorf("unsupported message type: %s", msg.Type)
 	}
@@ -133,6 +145,11 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 		c.mu.Unlock()
 
 		c.dispatchIfNeeded(pending)
+		if pending != nil {
+			c.emitFromMessage(ctx, pending.response, protocol.MessageWriteGranted, pending.response.Message, map[string]string{
+				"source": "lease-expire-dispatch",
+			})
+		}
 
 		if c.logger != nil {
 			c.logger.Info(
@@ -147,6 +164,8 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 				"leaseId", granted.response.LeaseID,
 			)
 		}
+
+		c.emitFromMessage(ctx, granted.response, protocol.MessageWriteGranted, "write granted", nil)
 		return granted.response, nil
 	}
 
@@ -169,6 +188,11 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 		c.mu.Unlock()
 
 		c.dispatchIfNeeded(pending)
+		if pending != nil {
+			c.emitFromMessage(ctx, pending.response, protocol.MessageWriteGranted, pending.response.Message, map[string]string{
+				"source": "lease-expire-dispatch",
+			})
+		}
 
 		if c.logger != nil {
 			c.logger.Info(
@@ -183,6 +207,10 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 				"queuePosition", queuePos,
 			)
 		}
+
+		c.emitFromMessage(ctx, resp, protocol.MessageWriteWait, "target busy", map[string]string{
+			"mode": protocol.WriteModeReject,
+		})
 		return resp, nil
 	}
 
@@ -195,6 +223,11 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 	c.mu.Unlock()
 
 	c.dispatchIfNeeded(pending)
+	if pending != nil {
+		c.emitFromMessage(ctx, pending.response, protocol.MessageWriteGranted, pending.response.Message, map[string]string{
+			"source": "lease-expire-dispatch",
+		})
+	}
 
 	if c.logger != nil {
 		c.logger.Info(
@@ -209,6 +242,11 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 			"queuePosition", queuePos,
 		)
 	}
+
+	c.emitFromMessage(ctx, msg, "write.queued", "write queued", map[string]string{
+		"queuePosition": fmt.Sprintf("%d", queuePos),
+		"mode":          protocol.WriteModeBlock,
+	})
 
 	if msg.WaitSeconds > 0 {
 		timer := time.NewTimer(time.Duration(msg.WaitSeconds) * time.Second)
@@ -229,11 +267,12 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 					"leaseId", granted.LeaseID,
 				)
 			}
+			c.emitFromMessage(ctx, granted, protocol.MessageWriteGranted, "queued write granted", nil)
 			return granted, nil
 
 		case <-timer.C:
 			c.removeWaiter(targetKey, msg.RequestID, msg.ClientID, msg.LeaseID)
-			return protocol.Message{
+			resp := protocol.Message{
 				Type:          protocol.MessageWriteWait,
 				RequestID:     msg.RequestID,
 				ClientID:      msg.ClientID,
@@ -246,7 +285,9 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 				Status:        protocol.StatusTimeout,
 				Message:       "timed out waiting for lease",
 				At:            time.Now().UTC(),
-			}, nil
+			}
+			c.emitFromMessage(ctx, resp, protocol.MessageWriteWait, "timed out waiting for lease", nil)
+			return resp, nil
 
 		case <-ctx.Done():
 			c.removeWaiter(targetKey, msg.RequestID, msg.ClientID, msg.LeaseID)
@@ -269,6 +310,7 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 				"leaseId", granted.LeaseID,
 			)
 		}
+		c.emitFromMessage(ctx, granted, protocol.MessageWriteGranted, "queued write granted", nil)
 		return granted, nil
 
 	case <-ctx.Done():
@@ -277,18 +319,23 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 	}
 }
 
-func (c *Coordinator) handleWriteCompleted(msg protocol.Message) (protocol.Message, error) {
+func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
 	targetKey, err := resolveTargetKey(msg)
 	if err != nil {
 		return protocol.Message{}, err
 	}
 
 	var (
-		pendingBefore *dispatchGrant
-		targetName    string
-		activeRequest string
-		activeClient  string
-		activeLeaseID string
+		pendingBefore   *dispatchGrant
+		targetName      string
+		activeAgent     string
+		activeTarget    string
+		activeKind      string
+		activePath      string
+		activeRequest   string
+		activeClient    string
+		activeLeaseID   string
+		refreshRequired bool
 	)
 
 	c.mu.Lock()
@@ -318,17 +365,95 @@ func (c *Coordinator) handleWriteCompleted(msg protocol.Message) (protocol.Messa
 		targetName = msg.Target
 	}
 
+	activeAgent = state.active.AgentID
+	activeTarget = state.active.Target
+	activeKind = state.active.Kind
+	activePath = state.active.Path
 	activeRequest = state.active.RequestID
 	activeClient = state.active.ClientID
 	activeLeaseID = state.active.LeaseID
+	refreshRequired = c.shouldRefreshBaseline(targetName)
 	c.mu.Unlock()
 
 	c.dispatchIfNeeded(pendingBefore)
 
-	if c.shouldRefreshBaseline(targetName) {
+	logAgent := activeAgent
+	if logAgent == "" {
+		logAgent = msg.AgentID
+	}
+
+	logTarget := activeTarget
+	if logTarget == "" {
+		logTarget = msg.Target
+	}
+	if logTarget == "" {
+		logTarget = targetName
+	}
+
+	logKind := activeKind
+	if logKind == "" {
+		logKind = msg.Kind
+	}
+
+	logPath := activePath
+	if logPath == "" {
+		logPath = msg.Path
+	}
+
+	if refreshRequired {
 		if _, err := c.backupSvc.RefreshBaseline(c.manifestPath, targetName); err != nil {
+			if c.logger != nil {
+				c.logger.Error(
+					"baseline refresh failed after write complete",
+					"agent", logAgent,
+					"target", logTarget,
+					"targetKey", targetKey,
+					"kind", logKind,
+					"path", logPath,
+					"requestId", activeRequest,
+					"leaseId", activeLeaseID,
+					"clientId", activeClient,
+					"manifestPath", c.manifestPath,
+					"refreshTarget", targetName,
+					"error", err,
+				)
+			}
 			return protocol.Message{}, err
 		}
+
+		if c.logger != nil {
+			c.logger.Info(
+				"baseline refreshed after write complete",
+				"agent", logAgent,
+				"target", logTarget,
+				"targetKey", targetKey,
+				"kind", logKind,
+				"path", logPath,
+				"requestId", activeRequest,
+				"leaseId", activeLeaseID,
+				"clientId", activeClient,
+				"manifestPath", c.manifestPath,
+				"refreshTarget", targetName,
+			)
+		}
+
+		c.emit(protocol.Event{
+			Type:      "baseline.refreshed",
+			AgentID:   logAgent,
+			Target:    logTarget,
+			TargetKey: targetKey,
+			Kind:      logKind,
+			Path:      logPath,
+			Message:   "baseline refreshed after write complete",
+			At:        time.Now().UTC(),
+			Data: map[string]string{
+				"requestId":     activeRequest,
+				"leaseId":       activeLeaseID,
+				"clientId":      activeClient,
+				"manifestPath":  c.manifestPath,
+				"refreshTarget": targetName,
+			},
+		})
 	}
 
 	var (
@@ -362,21 +487,45 @@ func (c *Coordinator) handleWriteCompleted(msg protocol.Message) (protocol.Messa
 	if c.logger != nil {
 		c.logger.Info(
 			"write completed",
-			"agent", msg.AgentID,
-			"target", msg.Target,
+			"agent", logAgent,
+			"target", logTarget,
 			"targetKey", targetKey,
-			"kind", msg.Kind,
-			"path", msg.Path,
-			"requestId", msg.RequestID,
-			"leaseId", msg.LeaseID,
-			"clientId", msg.ClientID,
+			"kind", logKind,
+			"path", logPath,
+			"requestId", activeRequest,
+			"leaseId", activeLeaseID,
+			"clientId", activeClient,
+			"baselineRefreshed", refreshRequired,
 		)
+	}
+
+	c.emit(protocol.Event{
+		Type:      protocol.MessageWriteCompleted,
+		AgentID:   logAgent,
+		Target:    logTarget,
+		TargetKey: targetKey,
+		Kind:      logKind,
+		Path:      logPath,
+		Message:   "write completed",
+		At:        time.Now().UTC(),
+		Data: map[string]string{
+			"requestId": activeRequest,
+			"leaseId":   activeLeaseID,
+			"clientId":  activeClient,
+			"status":    protocol.StatusCompleted,
+		},
+	})
+
+	c.emitFromMessage(ctx, releasedMsg, protocol.MessageWriteReleased, releasedMsg.Message, nil)
+
+	if nextGrant != nil {
+		c.emitFromMessage(ctx, nextGrant.response, protocol.MessageWriteGranted, "queued write granted", nil)
 	}
 
 	return releasedMsg, nil
 }
 
-func (c *Coordinator) handleWriteRelease(msg protocol.Message, success bool) (protocol.Message, error) {
+func (c *Coordinator) handleWriteRelease(ctx context.Context, msg protocol.Message, success bool) (protocol.Message, error) {
 	targetKey, err := resolveTargetKey(msg)
 	if err != nil {
 		return protocol.Message{}, err
@@ -423,6 +572,49 @@ func (c *Coordinator) handleWriteRelease(msg protocol.Message, success bool) (pr
 			"clientId", msg.ClientID,
 			"success", success,
 		)
+	}
+
+	if success {
+		c.emit(protocol.Event{
+			Type:      protocol.MessageWriteCompleted,
+			AgentID:   msg.AgentID,
+			Target:    msg.Target,
+			TargetKey: targetKey,
+			Kind:      msg.Kind,
+			Path:      msg.Path,
+			Message:   "write completed",
+			At:        time.Now().UTC(),
+			Data: map[string]string{
+				"requestId": msg.RequestID,
+				"leaseId":   msg.LeaseID,
+				"clientId":  msg.ClientID,
+				"status":    protocol.StatusCompleted,
+			},
+		})
+	} else {
+		c.emit(protocol.Event{
+			Type:      protocol.MessageWriteFailed,
+			AgentID:   msg.AgentID,
+			Target:    msg.Target,
+			TargetKey: targetKey,
+			Kind:      msg.Kind,
+			Path:      msg.Path,
+			Message:   "write failed",
+			At:        time.Now().UTC(),
+			Data: map[string]string{
+				"requestId": msg.RequestID,
+				"leaseId":   msg.LeaseID,
+				"clientId":  msg.ClientID,
+				"reason":    msg.Reason,
+				"status":    protocol.StatusFailed,
+			},
+		})
+	}
+
+	c.emitFromMessage(ctx, released, protocol.MessageWriteReleased, released.Message, nil)
+
+	if next != nil {
+		c.emitFromMessage(ctx, next.response, protocol.MessageWriteGranted, "queued write granted", nil)
 	}
 
 	return released, nil
@@ -512,6 +704,22 @@ func (c *Coordinator) expireIfNeededLocked(targetKey string) *dispatchGrant {
 			"clientId", state.active.ClientID,
 		)
 	}
+
+	c.emit(protocol.Event{
+		Type:      "lease.expired",
+		AgentID:   state.active.AgentID,
+		Target:    state.active.Target,
+		TargetKey: state.active.TargetKey,
+		Kind:      state.active.Kind,
+		Path:      state.active.Path,
+		Message:   "lease expired",
+		At:        now,
+		Data: map[string]string{
+			"requestId": state.active.RequestID,
+			"leaseId":   state.active.LeaseID,
+			"clientId":  state.active.ClientID,
+		},
+	})
 
 	state.active = nil
 	if len(state.queue) == 0 {
@@ -613,6 +821,80 @@ func (c *Coordinator) getOrCreateTargetStateLocked(targetKey string) *targetStat
 	state = &targetState{}
 	c.targets[targetKey] = state
 	return state
+}
+
+func (c *Coordinator) emit(event protocol.Event) {
+	if c.dispatcher == nil {
+		return
+	}
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
+	ctx := context.Background()
+	if err := c.dispatcher.Dispatch(ctx, event); err != nil && c.logger != nil {
+		c.logger.Error(
+			"coord dispatch failed",
+			"type", event.Type,
+			"target", event.Target,
+			"targetKey", event.TargetKey,
+			"error", err,
+		)
+	}
+}
+
+func (c *Coordinator) emitFromMessage(ctx context.Context, msg protocol.Message, eventType, eventMessage string, extra map[string]string) {
+	if c.dispatcher == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	data := map[string]string{
+		"requestId": msg.RequestID,
+		"leaseId":   msg.LeaseID,
+		"clientId":  msg.ClientID,
+	}
+	if msg.Status != "" {
+		data["status"] = msg.Status
+	}
+	if msg.QueuePosition > 0 {
+		data["queuePosition"] = fmt.Sprintf("%d", msg.QueuePosition)
+	}
+	if !msg.ExpiresAt.IsZero() {
+		data["expiresAt"] = msg.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if msg.Mode != "" {
+		data["mode"] = msg.Mode
+	}
+	if msg.Reason != "" {
+		data["reason"] = msg.Reason
+	}
+	for k, v := range extra {
+		data[k] = v
+	}
+
+	event := protocol.Event{
+		Type:      eventType,
+		AgentID:   msg.AgentID,
+		Target:    msg.Target,
+		TargetKey: msg.TargetKey,
+		Kind:      msg.Kind,
+		Path:      msg.Path,
+		Message:   eventMessage,
+		At:        time.Now().UTC(),
+		Data:      data,
+	}
+
+	if err := c.dispatcher.Dispatch(ctx, event); err != nil && c.logger != nil {
+		c.logger.Error(
+			"coord dispatch failed",
+			"type", event.Type,
+			"target", event.Target,
+			"targetKey", event.TargetKey,
+			"error", err,
+		)
+	}
 }
 
 func resolveTargetKey(msg protocol.Message) (string, error) {

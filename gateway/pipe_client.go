@@ -113,3 +113,15 @@ func (c *PipeClient) FailWrite(ctx context.Context, msg protocol.Message) (proto
 	msg.Type = protocol.MessageWriteFailed
 	return c.Request(ctx, msg)
 }
+
+func (c *PipeClient) Status(ctx context.Context) (protocol.Message, error) {
+	return c.Request(ctx, protocol.Message{
+		Type: protocol.TypeGuardStatusRequest,
+	})
+}
+
+func (c *PipeClient) Stop(ctx context.Context) (protocol.Message, error) {
+	return c.Request(ctx, protocol.Message{
+		Type: protocol.TypeGuardStopRequest,
+	})
+}

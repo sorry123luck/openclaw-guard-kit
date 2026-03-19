@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -17,22 +18,58 @@ import (
 	"github.com/Microsoft/go-winio"
 )
 
-type PipeServer struct {
-	logger  *logging.Logger
-	handler RequestHandler
-	cfg     PipeConfig
+func wrapPipeListenError(pipeName string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if isPipeInUseError(err) {
+		return fmt.Errorf("%w: %s: %v", ErrPipeInUse, pipeName, err)
+	}
+	return fmt.Errorf("listen pipe %s: %w", pipeName, err)
 }
 
-func NewPipeServer(logger *logging.Logger, handler RequestHandler, cfg PipeConfig) *PipeServer {
+func isPipeInUseError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "access is denied") ||
+		strings.Contains(s, "all pipe instances are busy") ||
+		strings.Contains(s, "pipe busy")
+}
+
+type EventDispatcher interface {
+	Dispatch(context.Context, protocol.Event) error
+}
+
+type PipeServer struct {
+	logger     *logging.Logger
+	handler    RequestHandler
+	dispatcher EventDispatcher
+	cfg        PipeConfig
+	stopFunc   func()
+}
+
+func NewPipeServer(
+	logger *logging.Logger,
+	handler RequestHandler,
+	dispatcher EventDispatcher,
+	cfg PipeConfig,
+) *PipeServer {
 	return &PipeServer{
-		logger:  logger,
-		handler: handler,
-		cfg:     cfg,
+		logger:     logger,
+		handler:    handler,
+		dispatcher: dispatcher,
+		cfg:        cfg,
+		stopFunc:   cfg.StopFunc,
 	}
 }
 
 func (s *PipeServer) Run(ctx context.Context) error {
 	pipeName := s.cfg.ResolvePipeName()
+
+	s.logger.Info("watch.starting", "pipe", pipeName)
 
 	listener, err := winio.ListenPipe(pipeName, &winio.PipeConfig{
 		MessageMode:      true,
@@ -40,7 +77,13 @@ func (s *PipeServer) Run(ctx context.Context) error {
 		OutputBufferSize: 64 * 1024,
 	})
 	if err != nil {
-		return err
+		wrappedErr := wrapPipeListenError(pipeName, err)
+		if isPipeInUseError(err) {
+			s.logger.Error("watch.start.failed", "reason", "pipe_in_use", "pipe", pipeName, "err", err)
+		} else {
+			s.logger.Error("watch.start.failed", "reason", "pipe_listen_error", "pipe", pipeName, "err", err)
+		}
+		return wrappedErr
 	}
 	defer listener.Close()
 
@@ -49,8 +92,8 @@ func (s *PipeServer) Run(ctx context.Context) error {
 		_ = listener.Close()
 	}()
 
-	s.logger.Info("pipe server started", "pipe", pipeName)
-	defer s.logger.Info("pipe server stopped", "pipe", pipeName)
+	s.logger.Info("watch.started", "pipe", pipeName)
+	defer s.logger.Info("watch.stopped", "pipe", pipeName)
 
 	for {
 		conn, err := listener.Accept()
@@ -112,6 +155,119 @@ func (s *PipeServer) handleConn(ctx context.Context, conn net.Conn) {
 		"mode", msg.Mode,
 	)
 
+	switch msg.Type {
+	case protocol.TypeGuardStatusRequest:
+		s.emit(ctx, protocol.Event{
+			Type:    protocol.TypeGuardStatusRequest,
+			AgentID: msg.AgentID,
+			Message: "guard status requested",
+			At:      time.Now().UTC(),
+			Data: map[string]string{
+				"requestId": msg.RequestID,
+				"clientId":  msg.ClientID,
+				"pipeName":  s.cfg.ResolvePipeName(),
+			},
+		})
+
+		resp := protocol.Message{
+			Type:      protocol.TypeGuardStatusResponse,
+			Status:    protocol.StatusCompleted,
+			RequestID: msg.RequestID,
+			ClientID:  msg.ClientID,
+			AgentID:   msg.AgentID,
+			Message:   "guard is running",
+			PipeName:  s.cfg.ResolvePipeName(),
+			At:        time.Now().UTC(),
+		}
+
+		if err := json.NewEncoder(conn).Encode(resp); err != nil {
+			if !errors.Is(err, io.EOF) {
+				s.logger.Error("pipe response write failed", "error", err)
+			}
+			return
+		}
+
+		s.emit(ctx, protocol.Event{
+			Type:    protocol.TypeGuardStatusResponse,
+			AgentID: resp.AgentID,
+			Message: resp.Message,
+			At:      resp.At,
+			Data: map[string]string{
+				"requestId": resp.RequestID,
+				"clientId":  resp.ClientID,
+				"status":    resp.Status,
+				"pipeName":  resp.PipeName,
+			},
+		})
+
+		s.logger.Debug(
+			"pipe response sent",
+			"type", resp.Type,
+			"status", resp.Status,
+			"agent", resp.AgentID,
+			"requestId", resp.RequestID,
+			"clientId", resp.ClientID,
+		)
+		return
+
+	case protocol.TypeGuardStopRequest:
+		s.emit(ctx, protocol.Event{
+			Type:    protocol.TypeGuardStopRequest,
+			AgentID: msg.AgentID,
+			Message: "guard stop requested",
+			At:      time.Now().UTC(),
+			Data: map[string]string{
+				"requestId": msg.RequestID,
+				"clientId":  msg.ClientID,
+			},
+		})
+
+		resp := protocol.Message{
+			Type:      protocol.TypeGuardStopResponse,
+			Status:    protocol.StatusCompleted,
+			RequestID: msg.RequestID,
+			ClientID:  msg.ClientID,
+			AgentID:   msg.AgentID,
+			Message:   "guard stop requested",
+			At:        time.Now().UTC(),
+		}
+
+		if err := json.NewEncoder(conn).Encode(resp); err != nil {
+			if !errors.Is(err, io.EOF) {
+				s.logger.Error("pipe response write failed", "error", err)
+			}
+			return
+		}
+
+		s.emit(ctx, protocol.Event{
+			Type:    protocol.TypeGuardStopResponse,
+			AgentID: resp.AgentID,
+			Message: resp.Message,
+			At:      resp.At,
+			Data: map[string]string{
+				"requestId": resp.RequestID,
+				"clientId":  resp.ClientID,
+				"status":    resp.Status,
+			},
+		})
+
+		s.logger.Debug(
+			"pipe response sent",
+			"type", resp.Type,
+			"status", resp.Status,
+			"agent", resp.AgentID,
+			"requestId", resp.RequestID,
+			"clientId", resp.ClientID,
+		)
+
+		s.logger.Info("watch.stop.requested", "source", "pipe")
+
+		if s.stopFunc != nil {
+			go s.stopFunc()
+		}
+		return
+	}
+
 	resp, err := s.handler.HandleMessage(ctx, msg)
 	if err != nil {
 		s.logger.Error(
@@ -172,6 +328,21 @@ func (s *PipeServer) handleConn(ctx context.Context, conn net.Conn) {
 		"clientId", resp.ClientID,
 		"queuePosition", resp.QueuePosition,
 	)
+}
+
+func (s *PipeServer) emit(ctx context.Context, event protocol.Event) {
+	if s.dispatcher == nil {
+		return
+	}
+	if err := s.dispatcher.Dispatch(ctx, event); err != nil && s.logger != nil {
+		s.logger.Error(
+			"pipe event dispatch failed",
+			"type", event.Type,
+			"target", event.Target,
+			"targetKey", event.TargetKey,
+			"error", err,
+		)
+	}
 }
 
 func isClosedListenerError(err error) bool {

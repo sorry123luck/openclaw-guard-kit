@@ -9,39 +9,34 @@ import (
 
 	"openclaw-guard-kit/backup"
 	"openclaw-guard-kit/config"
-	"openclaw-guard-kit/gateway"
 	"openclaw-guard-kit/internal/protocol"
 	"openclaw-guard-kit/logging"
-	"openclaw-guard-kit/notify"
-	"openclaw-guard-kit/process"
 )
 
 type LeaseInspector interface {
 	HasActiveLease(target, path, agentID string) bool
 }
 
+type EventDispatcher interface {
+	Dispatch(context.Context, protocol.Event) error
+}
+
 type Service struct {
 	logger         *logging.Logger
-	notifier       notify.Notifier
-	publisher      gateway.Publisher
-	supervisor     process.Supervisor
+	dispatcher     EventDispatcher
 	backupSvc      *backup.Service
 	leaseInspector LeaseInspector
 }
 
 func NewService(
 	logger *logging.Logger,
-	notifier notify.Notifier,
-	publisher gateway.Publisher,
-	supervisor process.Supervisor,
+	dispatcher EventDispatcher,
 	backupSvc *backup.Service,
 	leaseInspector ...LeaseInspector,
 ) *Service {
 	svc := &Service{
 		logger:     logger,
-		notifier:   notifier,
-		publisher:  publisher,
-		supervisor: supervisor,
+		dispatcher: dispatcher,
 		backupSvc:  backupSvc,
 	}
 
@@ -68,7 +63,7 @@ func (s *Service) Run(ctx context.Context, cfg config.AppConfig) error {
 				s.logger.Info(
 					"manifest missing; auto prepare baseline",
 					"agent", cfg.AgentID,
-					"state", cfg.StateFile,
+					"stateFile", cfg.StateFile,
 				)
 			}
 			manifest, err = s.backupSvc.Prepare(ctx, cfg)
@@ -112,6 +107,7 @@ func (s *Service) Run(ctx context.Context, cfg config.AppConfig) error {
 				s.logger.Error(
 					"watch scan failed",
 					"agent", cfg.AgentID,
+					"stateFile", cfg.StateFile,
 					"error", err,
 				)
 			}
@@ -137,15 +133,27 @@ func (s *Service) scanOnce(ctx context.Context, cfg config.AppConfig) error {
 			effectiveAgentID = cfg.AgentID
 		}
 
-		if s.hasActiveLease(snapshot, effectiveAgentID) {
+		drift, reason, err := compareToBaseline(snapshot)
+		if err != nil {
+			return fmt.Errorf("compare target %q at %q: %w", snapshot.Name, snapshot.SourcePath, err)
+		}
+		if !drift {
 			continue
 		}
 
-		drift, reason, err := compareToBaseline(snapshot)
-		if err != nil {
-			return err
-		}
-		if !drift {
+		if s.hasActiveLease(snapshot, effectiveAgentID) {
+			if s.logger != nil {
+				s.logger.Info(
+					"drift detected but skipped due to active lease",
+					"agent", effectiveAgentID,
+					"target", snapshot.Name,
+					"targetKey", snapshot.TargetKey,
+					"kind", snapshot.Kind,
+					"path", snapshot.SourcePath,
+					"reason", reason,
+					"message", "active lease exists, restore deferred",
+				)
+			}
 			continue
 		}
 
@@ -159,13 +167,30 @@ func (s *Service) scanOnce(ctx context.Context, cfg config.AppConfig) error {
 			Message:   reason,
 			At:        time.Now().UTC(),
 			Data: map[string]string{
-				"agentId": effectiveAgentID,
+				"agentId":      effectiveAgentID,
+				"reason":       reason,
+				"stateFile":    cfg.StateFile,
+				"baselineSha":  snapshot.SHA256,
+				"baselineSize": fmt.Sprintf("%d", snapshot.Size),
 			},
 		}
 		s.emit(ctx, cfg, driftEvent)
 
 		shouldRestore := (reason == "deleted" && cfg.RestoreOnDelete) || (reason != "deleted" && cfg.RestoreOnChange)
 		if !shouldRestore {
+			if s.logger != nil {
+				s.logger.Info(
+					"drift detected but restore disabled by config",
+					"agent", effectiveAgentID,
+					"target", snapshot.Name,
+					"targetKey", snapshot.TargetKey,
+					"kind", snapshot.Kind,
+					"path", snapshot.SourcePath,
+					"reason", reason,
+					"restoreOnDelete", cfg.RestoreOnDelete,
+					"restoreOnChange", cfg.RestoreOnChange,
+				)
+			}
 			continue
 		}
 
@@ -180,7 +205,11 @@ func (s *Service) scanOnce(ctx context.Context, cfg config.AppConfig) error {
 				Message:   err.Error(),
 				At:        time.Now().UTC(),
 				Data: map[string]string{
-					"agentId": effectiveAgentID,
+					"agentId":   effectiveAgentID,
+					"reason":    reason,
+					"result":    "failed",
+					"error":     err.Error(),
+					"stateFile": cfg.StateFile,
 				},
 			})
 			continue
@@ -196,7 +225,10 @@ func (s *Service) scanOnce(ctx context.Context, cfg config.AppConfig) error {
 			Message:   "baseline restored",
 			At:        time.Now().UTC(),
 			Data: map[string]string{
-				"agentId": effectiveAgentID,
+				"agentId":   effectiveAgentID,
+				"reason":    reason,
+				"result":    "restored",
+				"stateFile": cfg.StateFile,
 			},
 		})
 	}
@@ -209,7 +241,6 @@ func (s *Service) hasActiveLease(snapshot backup.Snapshot, agentID string) bool 
 		return false
 	}
 
-	// 优先走 path 推断，最准确。
 	if snapshot.SourcePath != "" && s.leaseInspector.HasActiveLease("", snapshot.SourcePath, agentID) {
 		return true
 	}
@@ -252,6 +283,9 @@ func (s *Service) emit(ctx context.Context, cfg config.AppConfig, event protocol
 	if _, ok := event.Data["agentId"]; !ok {
 		event.Data["agentId"] = event.AgentID
 	}
+	if _, ok := event.Data["stateFile"]; !ok && cfg.StateFile != "" {
+		event.Data["stateFile"] = cfg.StateFile
+	}
 	if event.TargetKey != "" {
 		if _, ok := event.Data["targetKey"]; !ok {
 			event.Data["targetKey"] = event.TargetKey
@@ -264,42 +298,45 @@ func (s *Service) emit(ctx context.Context, cfg config.AppConfig, event protocol
 	}
 
 	if s.logger != nil {
-		s.logger.Info(
-			event.Type,
+		fields := []any{
 			"agent", event.AgentID,
 			"target", event.Target,
 			"targetKey", event.TargetKey,
 			"kind", event.Kind,
 			"path", event.Path,
 			"message", event.Message,
-		)
-	}
-
-	if s.notifier != nil {
-		if err := s.notifier.Notify(ctx, event); err != nil && s.logger != nil {
-			s.logger.Error(
-				"notify failed",
-				"agent", event.AgentID,
-				"error", err,
-			)
 		}
-	}
 
-	if s.publisher != nil {
-		if err := s.publisher.Publish(ctx, event); err != nil && s.logger != nil {
-			s.logger.Error(
-				"publish failed",
-				"agent", event.AgentID,
-				"error", err,
-			)
+		if reason := event.Data["reason"]; reason != "" {
+			fields = append(fields, "reason", reason)
 		}
+		if result := event.Data["result"]; result != "" {
+			fields = append(fields, "result", result)
+		}
+		if stateFile := event.Data["stateFile"]; stateFile != "" {
+			fields = append(fields, "stateFile", stateFile)
+		}
+		if baselineSha := event.Data["baselineSha"]; baselineSha != "" {
+			fields = append(fields, "baselineSha", baselineSha)
+		}
+		if baselineSize := event.Data["baselineSize"]; baselineSize != "" {
+			fields = append(fields, "baselineSize", baselineSize)
+		}
+		if errorMessage := event.Data["error"]; errorMessage != "" {
+			fields = append(fields, "error", errorMessage)
+		}
+
+		s.logger.Info(string(event.Type), fields...)
 	}
 
-	if s.supervisor != nil {
-		if err := s.supervisor.OnEvent(ctx, event); err != nil && s.logger != nil {
+	if s.dispatcher != nil {
+		if err := s.dispatcher.Dispatch(ctx, event); err != nil && s.logger != nil {
 			s.logger.Error(
-				"process hook failed",
+				"dispatch failed",
 				"agent", event.AgentID,
+				"targetKey", event.TargetKey,
+				"kind", event.Kind,
+				"path", event.Path,
 				"error", err,
 			)
 		}

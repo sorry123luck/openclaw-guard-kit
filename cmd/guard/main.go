@@ -13,8 +13,12 @@ import (
 	"openclaw-guard-kit/backup"
 	"openclaw-guard-kit/config"
 	"openclaw-guard-kit/gateway"
+	"openclaw-guard-kit/internal/app"
+	"openclaw-guard-kit/internal/bootstrap"
 	coordsvc "openclaw-guard-kit/internal/coord"
 	"openclaw-guard-kit/internal/protocol"
+	"openclaw-guard-kit/internal/robot"
+	runtimepkg "openclaw-guard-kit/internal/runtime"
 	"openclaw-guard-kit/logging"
 	"openclaw-guard-kit/notify"
 	"openclaw-guard-kit/process"
@@ -67,7 +71,30 @@ func main() {
 		}
 	case "watch":
 		if err := runWatch(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "watch failed: %v\n", err)
+			if errors.Is(err, gateway.ErrPipeInUse) {
+				fmt.Fprintf(os.Stderr,
+					"watch 启动失败：pipe %s 已被其他 guard 进程占用。\n可能已有旧的 watch 进程仍在运行，请先停止旧进程后重试。\n",
+					gateway.DefaultPipeName,
+				)
+				os.Exit(2)
+			}
+
+			fmt.Fprintf(os.Stderr, "watch 启动失败: %v\n", err)
+			os.Exit(1)
+		}
+	case "run-service":
+		if err := runWindowsService(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "run-service failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "status":
+		if err := runStatus(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "status failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "stop":
+		if err := runStop(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "stop failed: %v\n", err)
 			os.Exit(1)
 		}
 	case "request-write":
@@ -139,11 +166,42 @@ func runPrepare(args []string) error {
 }
 
 func runWatch(args []string) error {
+	cfg, err := resolveWatchConfig(args)
+	if err != nil {
+		return err
+	}
+
+	logger, err := logging.New(cfg.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	application, err := buildWatchApp(cfg, logger, cancel)
+	if err != nil {
+		return err
+	}
+
+	err = application.Run(runCtx)
+	if err != nil && errors.Is(err, gateway.ErrPipeInUse) {
+		return gateway.ErrPipeInUse
+	}
+
+	return err
+}
+
+func resolveWatchConfig(args []string) (config.AppConfig, error) {
 	flags, fs := parseCommonFlags("watch")
 	restoreOnChange := fs.Bool("restore-on-change", true, "restore baseline when a watched file content changes")
 	restoreOnDelete := fs.Bool("restore-on-delete", true, "restore baseline when a watched file is removed")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return config.AppConfig{}, err
 	}
 
 	cfg, err := config.Resolve(config.Options{
@@ -160,23 +218,26 @@ func runWatch(args []string) error {
 		LogFile:                flags.LogFile,
 	})
 	if err != nil {
-		return err
+		return config.AppConfig{}, err
 	}
 
 	cfg.RestoreOnChange = *restoreOnChange
 	cfg.RestoreOnDelete = *restoreOnDelete
 	cfg.AutoPrepare = flags.AutoPrepare
 
-	logger, err := logging.New(cfg.LogFile)
-	if err != nil {
-		return err
-	}
-	defer logger.Close()
+	return cfg, nil
+}
 
+func buildWatchApp(cfg config.AppConfig, logger *logging.Logger, stopFunc func()) (*app.App, error) {
 	notifier := notify.NewLogNotifier(logger)
-	publisher := gateway.NewMemoryPublisher(logger)
 	supervisor := process.NewNoopSupervisor(logger)
 	backupSvc := backup.NewService(logger)
+
+	robotHub := robot.NewManager(logger)
+	robotHub.Register(robot.NewNoopBot())
+
+	eventBus := runtimepkg.NewEventBus(logger, notifier, supervisor, robotHub)
+	dispatcher := runtimepkg.NewDispatcher(logger, eventBus)
 
 	if _, err := backup.LoadManifest(cfg.StateFile); err != nil {
 		if errors.Is(err, os.ErrNotExist) && cfg.AutoPrepare {
@@ -188,26 +249,29 @@ func runWatch(args []string) error {
 			)
 
 			if _, err := backupSvc.Prepare(context.Background(), cfg); err != nil {
-				return err
+				return nil, err
 			}
 		} else {
-			return err
+			return nil, err
 		}
 	}
 
-	coord := coordsvc.NewCoordinator(logger)
+	coord := coordsvc.NewCoordinator(logger, dispatcher)
 	coord.ConfigureBaselineRefresh(backupSvc, cfg.StateFile)
 
-	watcher := watchsvc.NewService(logger, notifier, publisher, supervisor, backupSvc, coord)
-	pipeServer := gateway.NewPipeServer(logger, coord, gateway.PipeConfig{
+	watcher := watchsvc.NewService(logger, dispatcher, backupSvc, coord)
+	pipeServer := gateway.NewPipeServer(logger, coord, dispatcher, gateway.PipeConfig{
 		PipeName: gateway.DefaultPipeName,
+		StopFunc: stopFunc,
 	})
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	watchAdapter := bootstrap.NewWatcherAdapter(logger, "watch-service", func(ctx context.Context) error {
+		return watcher.Run(ctx, cfg)
+	})
 
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	pipeAdapter := bootstrap.NewPipeServerAdapter(logger, "pipe-server", func(ctx context.Context) error {
+		return pipeServer.Run(ctx)
+	})
 
 	logger.Info(
 		"starting guard watch",
@@ -218,32 +282,89 @@ func runWatch(args []string) error {
 		"pipe", gateway.DefaultPipeName,
 	)
 
-	errCh := make(chan error, 2)
+	return app.New(cfg, logger, bootstrap.Dependencies{
+		PipeServer:   pipeAdapter,
+		Watcher:      watchAdapter,
+		LeaseManager: coord,
+		Notifier:     notifier,
+		Supervisor:   supervisor,
+		RobotHub:     robotHub,
+		EventBus:     eventBus,
+		Dispatcher:   dispatcher,
+	})
+}
 
-	go func() {
-		errCh <- watcher.Run(runCtx, cfg)
-	}()
-
-	go func() {
-		errCh <- pipeServer.Run(runCtx)
-	}()
-
-	var firstErr error
-	for i := 0; i < 2; i++ {
-		err := <-errCh
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, context.Canceled) {
-			continue
-		}
-		if firstErr == nil {
-			firstErr = err
-			cancel()
-		}
+func runStatus(args []string) error {
+	flags, fs := parsePipeFlags("status")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	return firstErr
+	logger, err := logging.New(flags.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	client := gateway.NewPipeClient(logger, gateway.PipeConfig{
+		PipeName: flags.PipeName,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	resp, err := client.Status(ctx)
+	if err != nil {
+		if isPipeNotRunningError(err) {
+			fmt.Println("guard is not running")
+			return nil
+		}
+		return err
+	}
+
+	fmt.Println("guard is running")
+	if strings.TrimSpace(resp.PipeName) != "" {
+		fmt.Printf("pipe: %s\n", resp.PipeName)
+	} else {
+		fmt.Printf("pipe: %s\n", flags.PipeName)
+	}
+	return nil
+}
+
+func runStop(args []string) error {
+	flags, fs := parsePipeFlags("stop")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	logger, err := logging.New(flags.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	client := gateway.NewPipeClient(logger, gateway.PipeConfig{
+		PipeName: flags.PipeName,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	resp, err := client.Stop(ctx)
+	if err != nil {
+		if isPipeNotRunningError(err) {
+			fmt.Println("guard is not running")
+			return nil
+		}
+		return err
+	}
+
+	if strings.TrimSpace(resp.Message) != "" {
+		fmt.Println(resp.Message)
+	} else {
+		fmt.Println("guard stop requested")
+	}
+	return nil
 }
 
 func runRequestWrite(args []string) error {
@@ -265,14 +386,23 @@ func runRequestWrite(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	target := strings.TrimSpace(flags.Target)
+	targetKey := strings.TrimSpace(flags.TargetKey)
+	path := strings.TrimSpace(flags.Path)
+
+	// 只有 request-write 在完全未指定目标时，默认走 openclaw。
+	if target == "" && targetKey == "" && path == "" {
+		target = protocol.TargetOpenClaw
+	}
+
 	resp, err := client.RequestWrite(ctx, protocol.Message{
 		RequestID:    strings.TrimSpace(flags.RequestID),
 		ClientID:     normalizeClientID(flags.ClientID),
 		AgentID:      normalizeAgentID(flags.AgentID),
-		Target:       strings.TrimSpace(flags.Target),
-		TargetKey:    strings.TrimSpace(flags.TargetKey),
+		Target:       target,
+		TargetKey:    targetKey,
 		Kind:         strings.TrimSpace(flags.Kind),
-		Path:         strings.TrimSpace(flags.Path),
+		Path:         path,
 		LeaseSeconds: flags.LeaseSeconds,
 		WaitSeconds:  flags.WaitSeconds,
 		Mode:         normalizeWriteMode(flags.Mode),
@@ -289,6 +419,10 @@ func runRequestWrite(args []string) error {
 func runCompleteWrite(args []string) error {
 	flags, fs := parsePipeFlags("complete-write")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if err := ensureReleaseTargetSpecified("complete-write", flags); err != nil {
 		return err
 	}
 
@@ -327,6 +461,10 @@ func runCompleteWrite(args []string) error {
 func runFailWrite(args []string) error {
 	flags, fs := parsePipeFlags("fail-write")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if err := ensureReleaseTargetSpecified("fail-write", flags); err != nil {
 		return err
 	}
 
@@ -384,7 +522,7 @@ func parsePipeFlags(name string) (*pipeFlags, *flag.FlagSet) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.StringVar(&cfg.PipeName, "pipe", gateway.DefaultPipeName, "named pipe path")
 	fs.StringVar(&cfg.AgentID, "agent", "main", "agent id")
-	fs.StringVar(&cfg.Target, "target", protocol.TargetOpenClaw, "legacy target name")
+	fs.StringVar(&cfg.Target, "target", "", "legacy target name")
 	fs.StringVar(&cfg.TargetKey, "target-key", "", "resolved target key, e.g. openclaw / auth:main / models:tester")
 	fs.StringVar(&cfg.Kind, "kind", "", "target kind, e.g. openclaw / auth-profiles / models")
 	fs.StringVar(&cfg.Path, "path", "", "optional direct path")
@@ -450,6 +588,21 @@ func normalizeClientID(v string) string {
 	return v
 }
 
+func isPipeNotRunningError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if isPipeFileNotFoundErrno(err) {
+		return true
+	}
+
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "cannot find the file specified") ||
+		strings.Contains(s, "the system cannot find the file specified") ||
+		strings.Contains(s, "file not found")
+}
+
 func normalizeWriteMode(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	switch v {
@@ -462,12 +615,30 @@ func normalizeWriteMode(v string) string {
 	}
 }
 
+func ensureReleaseTargetSpecified(cmd string, flags *pipeFlags) error {
+	target := strings.TrimSpace(flags.Target)
+	targetKey := strings.TrimSpace(flags.TargetKey)
+	path := strings.TrimSpace(flags.Path)
+
+	if target != "" || targetKey != "" || path != "" {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"%s requires --target-key, --target, or --path; for auth-profiles use --lease-id <id> --agent main --target-key auth:main --kind auth-profiles --client <client> --request <request>",
+		cmd,
+	)
+}
+
 func usage() {
 	text := `openclaw-guard-kit / guard.exe (v2)
 
 Usage:
   guard prepare [flags]
   guard watch   [flags]
+  guard status  [flags]
+  guard stop    [flags]
+  guard run-service [flags]
 
 Testing commands:
   guard request-write  [flags]
@@ -477,17 +648,25 @@ Testing commands:
 Implemented in v2:
   - prepare: baseline backup for guarded targets
   - watch:   daemon watch + restore from baseline + named pipe server
+  - status:  check whether guard watch is running
+  - stop:    request running guard watch to stop gracefully
   - pipe:    dynamic write request / complete / fail testing
+  - run-service: internal Windows service entrypoint
 
 Examples:
   guard prepare --root C:\Users\Administrator\.openclaw --agent main
   guard watch --root C:\Users\Administrator\.openclaw --agent main --interval 2
+  guard status
+  guard stop
 
   guard request-write --agent main --target-key openclaw --kind openclaw --client test-cli --request req-1 --lease 180
   guard request-write --agent main --kind auth-profiles --path C:\Users\Administrator\.openclaw\agents\main\agent\auth-profiles.json --client test-cli --request req-2 --lease 180 --mode block --wait 30
 
-  guard complete-write --lease-id lease-123456789
-  guard fail-write --lease-id lease-123456789 --reason manual-test
+  guard complete-write --lease-id lease-123456789 --target-key openclaw --kind openclaw
+  guard fail-write --lease-id lease-123456789 --target-key openclaw --kind openclaw --reason manual-test
+
+  guard complete-write --lease-id lease-123456789 --agent main --target-key auth:main --kind auth-profiles --client test-cli --request req-auth-complete
+  guard fail-write --lease-id lease-123456789 --agent main --target-key auth:main --kind auth-profiles --client test-cli --request req-auth-fail
 `
 	fmt.Fprintln(os.Stdout, strings.TrimSpace(text))
 }

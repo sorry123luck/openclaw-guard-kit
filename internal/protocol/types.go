@@ -11,6 +11,14 @@ const (
 	EventRestoreFailed    = "restore.failed"
 	EventWatchStopped     = "watch.stopped"
 
+	// service / runtime 生命周期事件
+	EventServiceStarting         = "service.starting"
+	EventServiceStarted          = "service.started"
+	EventServiceStopping         = "service.stopping"
+	EventServiceStopped          = "service.stopped"
+	EventGuardCoordinatorStarted = "guard.coordinator.started"
+	EventGuardCoordinatorStopped = "guard.coordinator.stopped"
+
 	// 运行时发现 / 管理事件
 	EventTargetDiscovered = "target.discovered"
 	EventTargetManaged    = "target.managed"
@@ -24,25 +32,27 @@ const (
 	MessageWriteFailed    = "write.failed"
 	MessageWriteReleased  = "write.released"
 
+	// guard 管理消息
+	TypeGuardStatusRequest  = "guard.status.request"
+	TypeGuardStatusResponse = "guard.status.response"
+	TypeGuardStopRequest    = "guard.stop.request"
+	TypeGuardStopResponse   = "guard.stop.response"
+
 	// 通用错误响应
 	MessageError = "error"
 )
 
 const (
-	// 兼容旧 target 常量
 	TargetOpenClaw    = "openclaw"
 	TargetAuthProfile = "auth-profiles"
 
-	// 新 kind 常量
 	KindOpenClaw    = "openclaw"
 	KindAuthProfile = "auth-profiles"
 	KindModels      = "models"
 
-	// 写入模式
 	WriteModeReject = "reject"
 	WriteModeBlock  = "block"
 
-	// 响应状态
 	StatusGranted   = "granted"
 	StatusWaiting   = "waiting"
 	StatusBusy      = "busy"
@@ -57,8 +67,8 @@ const (
 type Event struct {
 	Type      string            `json:"type"`
 	AgentID   string            `json:"agentId,omitempty"`
-	Target    string            `json:"target,omitempty"`    // 兼容旧字段
-	TargetKey string            `json:"targetKey,omitempty"` // 新字段
+	Target    string            `json:"target,omitempty"`
+	TargetKey string            `json:"targetKey,omitempty"`
 	Kind      string            `json:"kind,omitempty"`
 	Path      string            `json:"path,omitempty"`
 	Message   string            `json:"message,omitempty"`
@@ -73,10 +83,8 @@ type Message struct {
 	ClientID  string `json:"clientId,omitempty"`
 	AgentID   string `json:"agentId,omitempty"`
 
-	// 兼容旧协议字段
 	Target string `json:"target,omitempty"`
 
-	// 新协议字段
 	TargetKey     string    `json:"targetKey,omitempty"`
 	Kind          string    `json:"kind,omitempty"`
 	Path          string    `json:"path,omitempty"`
@@ -88,7 +96,8 @@ type Message struct {
 	Status        string    `json:"status,omitempty"`
 	ExpiresAt     time.Time `json:"expiresAt,omitempty"`
 
-	Message string            `json:"message,omitempty"`
-	At      time.Time         `json:"at"`
-	Data    map[string]string `json:"data,omitempty"`
+	PipeName string            `json:"pipeName,omitempty"`
+	Message  string            `json:"message,omitempty"`
+	At       time.Time         `json:"at"`
+	Data     map[string]string `json:"data,omitempty"`
 }
