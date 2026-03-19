@@ -11,8 +11,6 @@ import (
 	"golang.org/x/sys/windows/svc"
 )
 
-const windowsServiceName = "OpenClawGuard"
-
 type guardWindowsService struct {
 	watchArgs []string
 }
