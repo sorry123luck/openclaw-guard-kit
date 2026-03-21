@@ -200,6 +200,49 @@ func (s *Service) RefreshBaseline(manifestPath, targetName string) (Manifest, er
 	return manifest, nil
 }
 
+// Stage 3: Health-based promotion/marking on manifest (persistent)
+func (s *Service) PromoteSnapshotToHealthy(manifestPath string, targetName string) error {
+	manifest, err := LoadManifest(manifestPath)
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i, snap := range manifest.Targets {
+		if snap.Name == targetName || snap.TargetKey == targetName {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("target not found in manifest: %s", targetName)
+	}
+	manifest.Targets[idx].State = SnapshotStateHealthy
+	manifest.Targets[idx].CreatedAt = time.Now().UTC()
+	return SaveManifest(manifestPath, manifest)
+}
+
+func (s *Service) MarkSnapshotAsBad(manifestPath string, targetName string) error {
+	manifest, err := LoadManifest(manifestPath)
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i, snap := range manifest.Targets {
+		if snap.Name == targetName || snap.TargetKey == targetName {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("target not found in manifest: %s", targetName)
+	}
+	manifest.Targets[idx].State = SnapshotStateBad
+	manifest.Targets[idx].CreatedAt = time.Now().UTC()
+	return SaveManifest(manifestPath, manifest)
+}
+
+// Stage 3: Remove in-repo anchor methods; real persistence will be via manifest APIs
+
 // CreateCandidateSnapshot creates a candidate snapshot for a given target (Stage 2 rough)
 func (s *Service) CreateCandidateSnapshot(ctx context.Context, target config.FileTarget, backupDir string) (Snapshot, error) {
 	snapshot, err := s.snapshotTarget(target, backupDir)
@@ -211,17 +254,10 @@ func (s *Service) CreateCandidateSnapshot(ctx context.Context, target config.Fil
 	return snapshot, nil
 }
 
-// PromoteSnapshotToHealthy promotes a candidate snapshot to healthy state
-func (s *Service) PromoteSnapshotToHealthy(snapshot *Snapshot) {
-	snapshot.State = SnapshotStateHealthy
-	snapshot.CreatedAt = time.Now().UTC()
-}
-
-// MarkSnapshotAsBad marks a snapshot as bad (invalid health)
-func (s *Service) MarkSnapshotAsBad(snapshot *Snapshot) {
-	snapshot.State = SnapshotStateBad
-	snapshot.CreatedAt = time.Now().UTC()
-}
+// Note: Stage-3 persistent health snapshot promotion/marking is implemented via
+// the manifest-based APIs PromoteSnapshotToHealthy(manifestPath, targetName) and
+// MarkSnapshotAsBad(manifestPath, targetName). In-memory helpers for this stage
+// are kept as part of the small skeleton but actual persistence is through the manifest.
 
 func Fingerprint(path string) (sha string, size int64, mode uint32, modTime time.Time, err error) {
 	info, err := os.Stat(path)
