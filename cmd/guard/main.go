@@ -87,11 +87,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "run-service failed: %v\n", err)
 			os.Exit(1)
 		}
-	case "service":
-		if err := handleServiceCommand(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "service failed: %v\n", err)
-			os.Exit(1)
-		}
 	case "status":
 		if err := runStatus(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "status failed: %v\n", err)
@@ -644,7 +639,6 @@ Usage:
   guard status  [flags]
   guard stop    [flags]
   guard run-service [flags]
-  guard service <install|uninstall|start|stop|status|run> [flags]
 
 Testing commands:
   guard request-write  [flags]
@@ -657,20 +651,13 @@ Implemented in v2:
   - status:  check whether guard watch is running
   - stop:    request running guard watch to stop gracefully
   - pipe:    dynamic write request / complete / fail testing
-  - run-service: legacy internal Windows service entrypoint
-  - service: Windows service install/start/stop/status/run
+  - run-service: internal Windows service entrypoint
 
 Examples:
   guard prepare --root C:\Users\Administrator\.openclaw --agent main
   guard watch --root C:\Users\Administrator\.openclaw --agent main --interval 2
   guard status
   guard stop
-
-  guard service install --root C:\Users\Administrator\.openclaw --agent main
-  guard service start
-  guard service status
-  guard service stop
-  guard service uninstall
 
   guard request-write --agent main --target-key openclaw --kind openclaw --client test-cli --request req-1 --lease 180
   guard request-write --agent main --kind auth-profiles --path C:\Users\Administrator\.openclaw\agents\main\agent\auth-profiles.json --client test-cli --request req-2 --lease 180 --mode block --wait 30
