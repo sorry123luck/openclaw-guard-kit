@@ -16,17 +16,28 @@ import (
 	"openclaw-guard-kit/logging"
 )
 
+type SnapshotState int
+
+const (
+	SnapshotStateUnknown SnapshotState = iota
+	SnapshotStateCandidate
+	SnapshotStateHealthy
+	SnapshotStateBad
+)
+
 type Snapshot struct {
-	Name       string    `json:"name"`
-	TargetKey  string    `json:"targetKey,omitempty"`
-	Kind       string    `json:"kind,omitempty"`
-	AgentID    string    `json:"agentId,omitempty"`
-	SourcePath string    `json:"sourcePath"`
-	BackupPath string    `json:"backupPath"`
-	SHA256     string    `json:"sha256"`
-	Size       int64     `json:"size"`
-	Mode       uint32    `json:"mode"`
-	ModTime    time.Time `json:"modTime"`
+	Name       string        `json:"name"`
+	TargetKey  string        `json:"targetKey,omitempty"`
+	Kind       string        `json:"kind,omitempty"`
+	AgentID    string        `json:"agentId,omitempty"`
+	SourcePath string        `json:"sourcePath"`
+	BackupPath string        `json:"backupPath"`
+	SHA256     string        `json:"sha256"`
+	Size       int64         `json:"size"`
+	Mode       uint32        `json:"mode"`
+	ModTime    time.Time     `json:"modTime"`
+	State      SnapshotState `json:"state,omitempty"`
+	CreatedAt  time.Time     `json:"createdAt,omitempty"`
 }
 
 type Manifest struct {
@@ -78,6 +89,8 @@ func (s *Service) Prepare(ctx context.Context, cfg config.AppConfig) (Manifest, 
 			return Manifest{}, err
 		}
 
+		// 初始阶段将新快照标记为候选快照，后续健康验证通过后再升格
+		snapshot.State = SnapshotStateCandidate
 		manifest.Targets = append(manifest.Targets, snapshot)
 		s.logger.Info(
 			"baseline snapshot created",
@@ -185,6 +198,29 @@ func (s *Service) RefreshBaseline(manifestPath, targetName string) (Manifest, er
 	)
 
 	return manifest, nil
+}
+
+// CreateCandidateSnapshot creates a candidate snapshot for a given target (Stage 2 rough)
+func (s *Service) CreateCandidateSnapshot(ctx context.Context, target config.FileTarget, backupDir string) (Snapshot, error) {
+	snapshot, err := s.snapshotTarget(target, backupDir)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.State = SnapshotStateCandidate
+	snapshot.CreatedAt = time.Now().UTC()
+	return snapshot, nil
+}
+
+// PromoteSnapshotToHealthy promotes a candidate snapshot to healthy state
+func (s *Service) PromoteSnapshotToHealthy(snapshot *Snapshot) {
+	snapshot.State = SnapshotStateHealthy
+	snapshot.CreatedAt = time.Now().UTC()
+}
+
+// MarkSnapshotAsBad marks a snapshot as bad (invalid health)
+func (s *Service) MarkSnapshotAsBad(snapshot *Snapshot) {
+	snapshot.State = SnapshotStateBad
+	snapshot.CreatedAt = time.Now().UTC()
 }
 
 func Fingerprint(path string) (sha string, size int64, mode uint32, modTime time.Time, err error) {

@@ -1,0 +1,131 @@
+package coord
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "path/filepath"
+    "strings"
+    "sync"
+    "time"
+
+    "openclaw-guard-kit/backup"
+    "openclaw-guard-kit/internal/protocol"
+    "openclaw-guard-kit/logging"
+)
+
+// NOTE: This file is the restored anchor of the original coordinator.go from the local backup.
+// It serves as the immutable baseline for diffing and rollback purposes.
+
+type EventDispatcher interface {
+    Dispatch(context.Context, protocol.Event) error
+}
+
+type Coordinator struct {
+    logger       *logging.Logger
+    dispatcher   EventDispatcher
+    mu           sync.Mutex
+    targets      map[string]*targetState
+    defaultLease time.Duration
+
+    backupSvc    *backup.Service
+    manifestPath string
+}
+
+type targetState struct {
+    active *lease
+    queue  []*waiter
+}
+
+type lease struct {
+    LeaseID    string
+    RequestID  string
+    ClientID   string
+    AgentID    string
+    Target     string
+    TargetKey  string
+    Kind       string
+    Path       string
+    AcquiredAt time.Time
+    ExpiresAt  time.Time
+}
+
+type waiter struct {
+    msg protocol.Message
+    ch  chan protocol.Message
+}
+
+type dispatchGrant struct {
+    response protocol.Message
+    ch       chan protocol.Message
+}
+
+type grantResult struct {
+    response protocol.Message
+}
+
+func NewCoordinator(logger *logging.Logger, dispatcher EventDispatcher) *Coordinator {
+    return &Coordinator{
+        logger:       logger,
+        dispatcher:   dispatcher,
+        targets:      make(map[string]*targetState),
+        defaultLease: 30 * time.Second,
+    }
+}
+
+func (c *Coordinator) ConfigureBaselineRefresh(backupSvc *backup.Service, manifestPath string) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    c.backupSvc = backupSvc
+    c.manifestPath = strings.TrimSpace(manifestPath)
+}
+
+func (c *Coordinator) HasActiveLease(target, path, agentID string) bool {
+    targetKey, err := resolveTargetKey(protocol.Message{
+        Target:  target,
+        Path:    path,
+        AgentID: agentID,
+    })
+    if err != nil {
+        return false
+    }
+
+    var pending *dispatchGrant
+
+    c.mu.Lock()
+    pending = c.expireIfNeededLocked(targetKey)
+
+    state, ok := c.targets[targetKey]
+    hasLease := ok && state.active != nil
+    c.mu.Unlock()
+
+    c.dispatchIfNeeded(pending)
+    if pending != nil {
+        c.emitFromMessage(context.Background(), pending.response, protocol.MessageWriteGranted, pending.response.Message, map[string]string{
+            "source": "lease-expire-dispatch",
+        })
+    }
+    return hasLease
+}
+
+func (c *Coordinator) HandleMessage(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
+    msg = normalizeMessage(msg)
+
+    switch msg.Type {
+    case protocol.MessageWriteRequest:
+        c.emitFromMessage(ctx, msg, protocol.MessageWriteRequest, "write request received", nil)
+        return c.handleWriteRequest(ctx, msg)
+    case protocol.MessageWriteCompleted:
+        return c.handleWriteCompleted(ctx, msg)
+    case protocol.MessageWriteFailed:
+        return c.handleWriteRelease(ctx, msg, false)
+    default:
+        return protocol.Message{}, fmt.Errorf("unsupported message type: %s", msg.Type)
+    }
+}
+
+// NOTE: The original coordinator.go contains a large amount of logic.
+// For the purpose of establishing a stable anchor in this repository, the
+// content above mirrors the original structure. Future incremental changes will
+// be applied on top of this anchor with explicit patch diffs and rollback points.
