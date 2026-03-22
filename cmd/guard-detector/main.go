@@ -4,17 +4,24 @@ package main
 
 import (
 	"context"
-	"time"
-
-	// reuse stdlib log for minimal skeleton; a real logger would be wired later
 	"log"
+	"os"
+	"path/filepath"
+	"time"
 )
 
 // Minimal entry to initialize and run the detector skeleton
 func main() {
+	// discover root dir and guard binaries
+	exePath, _ := os.Executable()
+	exeDir := filepath.Dir(exePath)
+	rootDir := filepath.Clean(filepath.Join(exeDir, ".."))
+	guardExe := filepath.Join(rootDir, "guard.exe")
+	guardUI := filepath.Join(rootDir, "guard-ui.exe")
+
 	cfg := DetectorConfig{
-		OpenClawPath:           "C:\\Program Files\\OpenClaw\\openclaw.exe",
-		RootDir:                "C:\\OpenClaw",
+		OpenClawPath:           filepath.Join(rootDir, "openclaw.exe"),
+		RootDir:                rootDir,
 		AgentID:                "main",
 		ProbeIntervalSeconds:   10,
 		OfflineGraceSeconds:    1800,
@@ -24,17 +31,18 @@ func main() {
 		LogLevel:               "info",
 	}
 
-	detector := NewDetector(cfg)
-	// Run with a cancellable context; in real deployment, wire to OS signals
+	logger := log.New(os.Stdout, "detector ", log.LstdFlags)
+	detector := NewDetector(logger, cfg, guardExe, guardUI)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// Stop after a long-running period in this skeleton for demonstration
+	// keep alive for a while
 	go func() {
 		time.Sleep(5 * time.Minute)
 		cancel()
 	}()
 
 	if err := detector.Run(ctx); err != nil {
-		log.Printf("detector exited: %v", err)
+		logger.Printf("detector exited: %v", err)
 	}
 }

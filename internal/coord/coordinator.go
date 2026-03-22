@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"openclaw-guard-kit/backup"
+	"openclaw-guard-kit/config"
 	"openclaw-guard-kit/internal/protocol"
 	"openclaw-guard-kit/logging"
 )
@@ -61,18 +62,37 @@ type grantResult struct {
 	response protocol.Message
 }
 
-// validateWriteTarget is a placeholder for early target consistency validation.
-// In Stage 2 we keep this as a no-op, and hook it into the write path in later stages.
+// validateWriteTarget provides minimal target consistency validation before applying write leases.
 func (c *Coordinator) validateWriteTarget(msg protocol.Message) error {
-	// Minimal safe-guard: if we have specialized kinds, log a warning when targetKey is empty
-	// Actual enforcement will be implemented in later stages with a real reference baseline.
-	if (msg.Kind == protocol.KindAuthProfile || msg.Kind == protocol.KindModels) && strings.TrimSpace(msg.TargetKey) == "" {
-		if c.logger != nil {
-			c.logger.Info("validateWriteTarget: missing targetKey for specialized kind", "kind", msg.Kind, "target", msg.Target)
+	// For targeted kinds that depend on agent routing, ensure targetKey encodes the agent correctly.
+	if msg.Kind == protocol.KindAuthProfile || msg.Kind == protocol.KindModels {
+		var expectedAgentID string
+		if strings.HasPrefix(msg.TargetKey, "auth:") {
+			expectedAgentID = strings.TrimPrefix(msg.TargetKey, "auth:")
+		} else if strings.HasPrefix(msg.TargetKey, "models:") {
+			expectedAgentID = strings.TrimPrefix(msg.TargetKey, "models:")
+		} else {
+			if msg.AgentID != "" {
+				expectedAgentID = msg.AgentID
+			} else {
+				return nil
+			}
+		}
+		if msg.AgentID != "" && expectedAgentID != "" && msg.AgentID != expectedAgentID {
+			return fmt.Errorf("agent ID mismatch: message AgentID=%q, targetKey implies agentID=%q", msg.AgentID, expectedAgentID)
+		}
+		if msg.Path != "" && expectedAgentID != "" {
+			if !strings.Contains(msg.Path, string(filepath.Separator)+expectedAgentID+string(filepath.Separator)) &&
+				!strings.HasSuffix(msg.Path, string(filepath.Separator)+expectedAgentID) &&
+				!strings.HasPrefix(msg.Path, expectedAgentID+string(filepath.Separator)) {
+				return fmt.Errorf("path %q not under expected agent %q", msg.Path, expectedAgentID)
+			}
 		}
 	}
 	return nil
 }
+
+// (removed duplicate placeholder for anchor preservation)
 
 func NewCoordinator(logger *logging.Logger, dispatcher EventDispatcher) *Coordinator {
 	return &Coordinator{
@@ -142,6 +162,9 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 	}
 
 	msg.TargetKey = targetKey
+	if err := c.validateWriteTarget(msg); err != nil {
+		return protocol.Message{}, err
+	}
 	if msg.Mode == "" {
 		msg.Mode = protocol.WriteModeReject
 	}
@@ -432,6 +455,21 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 				)
 			}
 			return protocol.Message{}, err
+		}
+
+		// Stage 3: create a candidate snapshot and append to manifest for future health validation
+		if c.backupSvc != nil && c.manifestPath != "" {
+			candTarget := config.FileTarget{Name: targetName, Path: activePath}
+			cand, err := c.backupSvc.CreateCandidateSnapshot(ctx, candTarget, "./backup")
+			if err == nil {
+				if manifest, err2 := backup.LoadManifest(c.manifestPath); err2 == nil {
+					manifest.Targets = append(manifest.Targets, cand)
+					_ = backup.SaveManifest(c.manifestPath, manifest)
+					if c.logger != nil {
+						c.logger.Info("candidate snapshot appended to manifest", "target", cand.TargetKey, "path", cand.SourcePath)
+					}
+				}
+			}
 		}
 
 		if c.logger != nil {
