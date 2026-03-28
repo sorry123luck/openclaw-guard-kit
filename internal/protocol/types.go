@@ -4,12 +4,14 @@ import "time"
 
 const (
 	// 守护事件
-	EventPrepareCompleted = "prepare.completed"
-	EventWatchStarted     = "watch.started"
-	EventDriftDetected    = "drift.detected"
-	EventRestoreCompleted = "restore.completed"
-	EventRestoreFailed    = "restore.failed"
-	EventWatchStopped     = "watch.stopped"
+	EventPrepareCompleted  = "prepare.completed"
+	EventWatchStarted      = "watch.started"
+	EventDriftDetected     = "drift.detected"
+	EventRestoreCompleted  = "restore.completed"
+	EventRestoreFailed     = "restore.failed"
+	EventWatchStopped      = "watch.stopped"
+	EventCandidateCreated  = "candidate.created"
+	EventCandidatePromoted = "candidate.promoted"
 
 	// service / runtime 生命周期事件
 	EventServiceStarting         = "service.starting"
@@ -18,6 +20,12 @@ const (
 	EventServiceStopped          = "service.stopped"
 	EventGuardCoordinatorStarted = "guard.coordinator.started"
 	EventGuardCoordinatorStopped = "guard.coordinator.stopped"
+	// detector / OpenClaw 产品级生命周期通知
+	EventOpenClawOnline           = "openclaw.online"
+	EventOpenClawTransition       = "openclaw.transition"
+	EventOpenClawRecovered        = "openclaw.recovered"
+	EventOpenClawOfflineConfirmed = "openclaw.offline_confirmed"
+	EventGuardAnomaly             = "guard.anomaly"
 
 	// 运行时发现 / 管理事件
 	EventTargetDiscovered = "target.discovered"

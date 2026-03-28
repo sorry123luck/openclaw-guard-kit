@@ -13,6 +13,7 @@ import (
 	"openclaw-guard-kit/config"
 	"openclaw-guard-kit/internal/protocol"
 	"openclaw-guard-kit/logging"
+	notify "openclaw-guard-kit/notify"
 )
 
 type EventDispatcher interface {
@@ -28,6 +29,7 @@ type Coordinator struct {
 
 	backupSvc    *backup.Service
 	manifestPath string
+	backupDir    string
 }
 
 type targetState struct {
@@ -64,29 +66,50 @@ type grantResult struct {
 
 // validateWriteTarget provides minimal target consistency validation before applying write leases.
 func (c *Coordinator) validateWriteTarget(msg protocol.Message) error {
-	// For targeted kinds that depend on agent routing, ensure targetKey encodes the agent correctly.
-	if msg.Kind == protocol.KindAuthProfile || msg.Kind == protocol.KindModels {
-		var expectedAgentID string
-		if strings.HasPrefix(msg.TargetKey, "auth:") {
-			expectedAgentID = strings.TrimPrefix(msg.TargetKey, "auth:")
-		} else if strings.HasPrefix(msg.TargetKey, "models:") {
-			expectedAgentID = strings.TrimPrefix(msg.TargetKey, "models:")
-		} else {
-			if msg.AgentID != "" {
-				expectedAgentID = msg.AgentID
-			} else {
-				return nil
+	// Determine expected agent id from targetKey or agent field
+	var expectedAgentID string
+	if strings.HasPrefix(msg.TargetKey, "auth:") {
+		expectedAgentID = strings.TrimPrefix(msg.TargetKey, "auth:")
+	} else if strings.HasPrefix(msg.TargetKey, "models:") {
+		expectedAgentID = strings.TrimPrefix(msg.TargetKey, "models:")
+	} else if msg.TargetKey == protocol.TargetOpenClaw {
+		// openclaw targetKey: no agent association
+		expectedAgentID = ""
+	} else {
+		// generic targetKey (e.g., absolute path): no agent association from targetKey
+		expectedAgentID = ""
+	}
+	// If we have an expectedAgentID from the targetKey, and the message provides an AgentID, they must match.
+	if expectedAgentID != "" && msg.AgentID != "" && msg.AgentID != expectedAgentID {
+		return fmt.Errorf("agent ID mismatch: message AgentID=%q, targetKey implies agentID=%q", msg.AgentID, expectedAgentID)
+	}
+	// Path validation: if the path is under agents/<agent>/ any depth, then the agentID must match <agent>.
+	// This applies regardless of targetKey (even if targetKey is generic or openclaw, etc.)
+	if msg.Path != "" {
+		p := strings.ReplaceAll(msg.Path, "\\", "/")
+		// Check if the path starts with /agents/<agent>/ for any agent
+		if strings.HasPrefix(p, "/agents/") {
+			// Extract the agent part: /agents/<agent>/...
+			parts := strings.Split(p, "/")
+			if len(parts) >= 3 {
+				agentFromPath := parts[2]
+				// If the message provides an AgentID, it must match the agent from the path.
+				if msg.AgentID != "" && msg.AgentID != agentFromPath {
+					return fmt.Errorf("agent ID mismatch: message AgentID=%q, but path is under agent %q", msg.AgentID, agentFromPath)
+				}
+				// If the message does not provide an AgentID, we cannot validate; but we can still check consistency with targetKey?
+				// For now, we only validate when msg.AgentID is provided.
 			}
 		}
-		if msg.AgentID != "" && expectedAgentID != "" && msg.AgentID != expectedAgentID {
-			return fmt.Errorf("agent ID mismatch: message AgentID=%q, targetKey implies agentID=%q", msg.AgentID, expectedAgentID)
-		}
-		if msg.Path != "" && expectedAgentID != "" {
-			if !strings.Contains(msg.Path, string(filepath.Separator)+expectedAgentID+string(filepath.Separator)) &&
-				!strings.HasSuffix(msg.Path, string(filepath.Separator)+expectedAgentID) &&
-				!strings.HasPrefix(msg.Path, expectedAgentID+string(filepath.Separator)) {
-				return fmt.Errorf("path %q not under expected agent %q", msg.Path, expectedAgentID)
-			}
+	}
+	// Additionally, if we have an expectedAgentID from targetKey (auth: or models:), we already did the agentID match above.
+	// For auth: and models:, we also want to validate that the path is under that agent's directory.
+	if expectedAgentID != "" && msg.Path != "" {
+		p := strings.ReplaceAll(msg.Path, "\\", "/")
+		if !(strings.Contains(p, "/agents/"+expectedAgentID+"/") ||
+			strings.HasSuffix(p, "/"+expectedAgentID) ||
+			strings.HasPrefix(p, expectedAgentID+"/")) {
+			return fmt.Errorf("path %q not under expected agent %q", msg.Path, expectedAgentID)
 		}
 	}
 	return nil
@@ -111,6 +134,47 @@ func (c *Coordinator) ConfigureBaselineRefresh(backupSvc *backup.Service, manife
 	c.manifestPath = strings.TrimSpace(manifestPath)
 }
 
+// ConfigureBackupDir sets the backup directory for snapshot operations
+func (c *Coordinator) ConfigureBackupDir(backupDir string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.backupDir = strings.TrimSpace(backupDir)
+}
+func (c *Coordinator) resolveManagedPath(targetKey string) string {
+	targetKey = strings.TrimSpace(strings.ToLower(targetKey))
+	if targetKey == "" {
+		return ""
+	}
+
+	c.mu.Lock()
+	manifestPath := strings.TrimSpace(c.manifestPath)
+	c.mu.Unlock()
+
+	if manifestPath == "" {
+		return ""
+	}
+
+	manifest, err := backup.LoadManifest(manifestPath)
+	if err != nil {
+		return ""
+	}
+
+	for _, snap := range manifest.TrustedTargets {
+		if strings.ToLower(strings.TrimSpace(snap.TargetKey)) == targetKey ||
+			strings.ToLower(strings.TrimSpace(snap.Name)) == targetKey {
+			return strings.TrimSpace(snap.SourcePath)
+		}
+	}
+
+	for _, snap := range manifest.CandidateTargets {
+		if strings.ToLower(strings.TrimSpace(snap.TargetKey)) == targetKey ||
+			strings.ToLower(strings.TrimSpace(snap.Name)) == targetKey {
+			return strings.TrimSpace(snap.SourcePath)
+		}
+	}
+
+	return ""
+}
 func (c *Coordinator) HasActiveLease(target, path, agentID string) bool {
 	targetKey, err := resolveTargetKey(protocol.Message{
 		Target:  target,
@@ -162,6 +226,11 @@ func (c *Coordinator) handleWriteRequest(ctx context.Context, msg protocol.Messa
 	}
 
 	msg.TargetKey = targetKey
+	if strings.TrimSpace(msg.Path) == "" {
+		if resolvedPath := c.resolveManagedPath(targetKey); resolvedPath != "" {
+			msg.Path = resolvedPath
+		}
+	}
 	if err := c.validateWriteTarget(msg); err != nil {
 		return protocol.Message{}, err
 	}
@@ -362,16 +431,16 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 	}
 
 	var (
-		pendingBefore   *dispatchGrant
-		targetName      string
-		activeAgent     string
-		activeTarget    string
-		activeKind      string
-		activePath      string
-		activeRequest   string
-		activeClient    string
-		activeLeaseID   string
-		refreshRequired bool
+		pendingBefore     *dispatchGrant
+		targetName        string
+		activeAgent       string
+		activeTarget      string
+		activeKind        string
+		activePath        string
+		activeRequest     string
+		activeClient      string
+		activeLeaseID     string
+		candidateRequired bool
 	)
 
 	c.mu.Lock()
@@ -408,7 +477,7 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 	activeRequest = state.active.RequestID
 	activeClient = state.active.ClientID
 	activeLeaseID = state.active.LeaseID
-	refreshRequired = c.shouldRefreshBaseline(targetName)
+	candidateRequired = c.shouldRefreshBaseline(targetName)
 	c.mu.Unlock()
 
 	c.dispatchIfNeeded(pendingBefore)
@@ -435,12 +504,26 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 	if logPath == "" {
 		logPath = msg.Path
 	}
+	if strings.TrimSpace(logPath) == "" {
+		logPath = c.resolveManagedPath(targetName)
+	}
 
-	if refreshRequired {
-		if _, err := c.backupSvc.RefreshBaseline(c.manifestPath, targetName); err != nil {
+	if candidateRequired {
+		backupDir := c.backupDir
+		if backupDir == "" {
+			backupDir = "./backup"
+		}
+
+		if strings.TrimSpace(logPath) == "" {
+			return protocol.Message{}, fmt.Errorf("resolve source path failed for target: %s", targetName)
+		}
+
+		candTarget := config.FileTarget{Name: targetName, Path: logPath}
+		candidate, err := c.backupSvc.CreateCandidateSnapshot(ctx, candTarget, backupDir)
+		if err != nil {
 			if c.logger != nil {
 				c.logger.Error(
-					"baseline refresh failed after write complete",
+					"candidate snapshot create failed after write complete",
 					"agent", logAgent,
 					"target", logTarget,
 					"targetKey", targetKey,
@@ -450,31 +533,35 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 					"leaseId", activeLeaseID,
 					"clientId", activeClient,
 					"manifestPath", c.manifestPath,
-					"refreshTarget", targetName,
+					"candidateTarget", targetName,
+					"error", err,
+				)
+			}
+			return protocol.Message{}, err
+		}
+		if err := c.backupSvc.UpsertCandidateSnapshot(c.manifestPath, candidate); err != nil {
+			if c.logger != nil {
+				c.logger.Error(
+					"candidate snapshot persist failed after write complete",
+					"agent", logAgent,
+					"target", logTarget,
+					"targetKey", targetKey,
+					"kind", logKind,
+					"path", logPath,
+					"requestId", activeRequest,
+					"leaseId", activeLeaseID,
+					"clientId", activeClient,
+					"manifestPath", c.manifestPath,
+					"candidateTarget", targetName,
 					"error", err,
 				)
 			}
 			return protocol.Message{}, err
 		}
 
-		// Stage 3: create a candidate snapshot and append to manifest for future health validation
-		if c.backupSvc != nil && c.manifestPath != "" {
-			candTarget := config.FileTarget{Name: targetName, Path: activePath}
-			cand, err := c.backupSvc.CreateCandidateSnapshot(ctx, candTarget, "./backup")
-			if err == nil {
-				if manifest, err2 := backup.LoadManifest(c.manifestPath); err2 == nil {
-					manifest.Targets = append(manifest.Targets, cand)
-					_ = backup.SaveManifest(c.manifestPath, manifest)
-					if c.logger != nil {
-						c.logger.Info("candidate snapshot appended to manifest", "target", cand.TargetKey, "path", cand.SourcePath)
-					}
-				}
-			}
-		}
-
 		if c.logger != nil {
 			c.logger.Info(
-				"baseline refreshed after write complete",
+				"candidate snapshot stored after write complete",
 				"agent", logAgent,
 				"target", logTarget,
 				"targetKey", targetKey,
@@ -484,25 +571,25 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 				"leaseId", activeLeaseID,
 				"clientId", activeClient,
 				"manifestPath", c.manifestPath,
-				"refreshTarget", targetName,
+				"candidateTarget", targetName,
 			)
 		}
 
 		c.emit(protocol.Event{
-			Type:      "baseline.refreshed",
+			Type:      protocol.EventCandidateCreated,
 			AgentID:   logAgent,
 			Target:    logTarget,
 			TargetKey: targetKey,
 			Kind:      logKind,
 			Path:      logPath,
-			Message:   "baseline refreshed after write complete",
+			Message:   "candidate snapshot stored after write complete",
 			At:        time.Now().UTC(),
 			Data: map[string]string{
-				"requestId":     activeRequest,
-				"leaseId":       activeLeaseID,
-				"clientId":      activeClient,
-				"manifestPath":  c.manifestPath,
-				"refreshTarget": targetName,
+				"requestId":       activeRequest,
+				"leaseId":         activeLeaseID,
+				"clientId":        activeClient,
+				"manifestPath":    c.manifestPath,
+				"candidateTarget": targetName,
 			},
 		})
 	}
@@ -520,13 +607,13 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 	if !ok || state.active == nil {
 		c.mu.Unlock()
 		c.dispatchIfNeeded(pendingAfter)
-		return protocol.Message{}, errors.New("no active lease for target after baseline refresh")
+		return protocol.Message{}, errors.New("no active lease for target after candidate snapshot step")
 	}
 
 	if state.active.RequestID != activeRequest || state.active.ClientID != activeClient || state.active.LeaseID != activeLeaseID {
 		c.mu.Unlock()
 		c.dispatchIfNeeded(pendingAfter)
-		return protocol.Message{}, errors.New("active lease changed during baseline refresh")
+		return protocol.Message{}, errors.New("active lease changed during candidate snapshot step")
 	}
 
 	releasedMsg, nextGrant = c.releaseActiveLocked(targetKey, state, true)
@@ -534,6 +621,11 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 
 	c.dispatchIfNeeded(pendingAfter)
 	c.dispatchIfNeeded(nextGrant)
+
+	writeCompletedMessage := "write completed"
+	if candidateRequired {
+		writeCompletedMessage = "write completed, candidate snapshot stored, awaiting verification"
+	}
 
 	if c.logger != nil {
 		c.logger.Info(
@@ -546,7 +638,8 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 			"requestId", activeRequest,
 			"leaseId", activeLeaseID,
 			"clientId", activeClient,
-			"baselineRefreshed", refreshRequired,
+			"candidateStored", candidateRequired,
+			"message", writeCompletedMessage,
 		)
 	}
 
@@ -557,13 +650,14 @@ func (c *Coordinator) handleWriteCompleted(ctx context.Context, msg protocol.Mes
 		TargetKey: targetKey,
 		Kind:      logKind,
 		Path:      logPath,
-		Message:   "write completed",
+		Message:   writeCompletedMessage,
 		At:        time.Now().UTC(),
 		Data: map[string]string{
-			"requestId": activeRequest,
-			"leaseId":   activeLeaseID,
-			"clientId":  activeClient,
-			"status":    protocol.StatusCompleted,
+			"requestId":       activeRequest,
+			"leaseId":         activeLeaseID,
+			"clientId":        activeClient,
+			"status":          protocol.StatusCompleted,
+			"candidateStored": fmt.Sprintf("%t", candidateRequired),
 		},
 	})
 
@@ -690,7 +784,7 @@ func (c *Coordinator) releaseActiveLocked(targetKey string, state *targetState, 
 
 	if success {
 		if c.shouldRefreshBaseline(active.TargetKey) || c.shouldRefreshBaseline(active.Target) {
-			releasedMsg.Message = "write completed, baseline refreshed, and lease released"
+			releasedMsg.Message = "write completed, candidate snapshot stored, awaiting verification, and lease released"
 		} else {
 			releasedMsg.Message = "write completed and lease released"
 		}
@@ -891,6 +985,8 @@ func (c *Coordinator) emit(event protocol.Event) {
 			"error", err,
 		)
 	}
+	// also broadcast to notify system (multi-channel, staged)
+	notify.Broadcast(context.Background(), event)
 }
 
 func (c *Coordinator) emitFromMessage(ctx context.Context, msg protocol.Message, eventType, eventMessage string, extra map[string]string) {

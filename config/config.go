@@ -16,28 +16,33 @@ type FileTarget struct {
 }
 
 type AppConfig struct {
-	RootDir             string `json:"rootDir"`
-	AgentID             string `json:"agentId"`
-	OpenClawPath        string `json:"openclawPath"`
-	AuthProfilesPath    string `json:"authProfilesPath,omitempty"`
-	IncludeAuthProfiles bool   `json:"includeAuthProfiles"`
-	BackupDir           string `json:"backupDir"`
-	StateFile           string `json:"stateFile"`
-	PollIntervalSeconds int    `json:"pollIntervalSeconds"`
-	RestoreOnChange     bool   `json:"restoreOnChange"`
-	RestoreOnDelete     bool   `json:"restoreOnDelete"`
-	AutoPrepare         bool   `json:"autoPrepare"`
-	LogFile             string `json:"logFile,omitempty"`
+	RootDir             string   `json:"rootDir"`
+	AgentID             string   `json:"agentId"`
+	Agents              []string `json:"agents,omitempty"`
+	OpenClawPath        string   `json:"openclawPath"`
+	AuthProfilesPath    string   `json:"authProfilesPath,omitempty"`
+	IncludeAuthProfiles bool     `json:"includeAuthProfiles"`
+	IncludeModels       bool     `json:"includeModels"`
+	BackupDir           string   `json:"backupDir"`
+	StateFile           string   `json:"stateFile"`
+	PollIntervalSeconds int      `json:"pollIntervalSeconds"`
+	RestoreOnChange     bool     `json:"restoreOnChange"`
+	RestoreOnDelete     bool     `json:"restoreOnDelete"`
+	AutoPrepare         bool     `json:"autoPrepare"`
+	LogFile             string   `json:"logFile,omitempty"`
 }
 
 type Options struct {
 	ConfigPath             string
 	RootDir                string
 	AgentID                string
+	Agents                 []string
 	OpenClawPath           string
 	AuthProfilesPath       string
 	IncludeAuthProfiles    bool
 	IncludeAuthProfilesSet bool
+	IncludeModels          bool
+	IncludeModelsSet       bool
 	BackupDir              string
 	StateFile              string
 	PollIntervalSeconds    int
@@ -50,6 +55,7 @@ type partialConfig struct {
 	OpenClawPath        *string `json:"openclawPath"`
 	AuthProfilesPath    *string `json:"authProfilesPath"`
 	IncludeAuthProfiles *bool   `json:"includeAuthProfiles"`
+	IncludeModels       *bool   `json:"includeModels"`
 	BackupDir           *string `json:"backupDir"`
 	StateFile           *string `json:"stateFile"`
 	PollIntervalSeconds *int    `json:"pollIntervalSeconds"`
@@ -97,12 +103,18 @@ func Resolve(opts Options) (AppConfig, error) {
 	if opts.IncludeAuthProfilesSet {
 		cfg.IncludeAuthProfiles = opts.IncludeAuthProfiles
 	}
+	if opts.IncludeModelsSet {
+		cfg.IncludeModels = opts.IncludeModels
+	}
 
 	if cfg.RootDir == "" {
 		cfg.RootDir = defaultRootDir()
 	}
 	if strings.TrimSpace(cfg.AgentID) == "" {
 		cfg.AgentID = "main"
+	}
+	if len(opts.Agents) > 0 {
+		cfg.Agents = opts.Agents
 	}
 
 	rootAbs, err := filepath.Abs(cfg.RootDir)
@@ -157,6 +169,55 @@ func Resolve(opts Options) (AppConfig, error) {
 	return cfg, nil
 }
 
+func (c AppConfig) AllAgents() []string {
+	if len(c.Agents) > 0 {
+		return c.Agents
+	}
+	// Auto-discover all agents
+	return c.discoverAgents()
+}
+
+func (c AppConfig) discoverAgents() []string {
+	agentsDir := filepath.Join(c.RootDir, "agents")
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var agents []string
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		agentID := entry.Name()
+		authPath := filepath.Join(agentsDir, agentID, "agent", "auth-profiles.json")
+		modelsPath := filepath.Join(agentsDir, agentID, "agent", "models.json")
+
+		_, authErr := os.Stat(authPath)
+		_, modelsErr := os.Stat(modelsPath)
+
+		if authErr == nil || modelsErr == nil {
+			if !seen[agentID] {
+				seen[agentID] = true
+				agents = append(agents, agentID)
+			}
+		}
+	}
+
+	for i := 0; i < len(agents)-1; i++ {
+		for j := i + 1; j < len(agents); j++ {
+			if agents[i] > agents[j] {
+				agents[i], agents[j] = agents[j], agents[i]
+			}
+		}
+	}
+
+	return agents
+}
+
 func (c AppConfig) Targets() ([]FileTarget, error) {
 	if _, err := os.Stat(c.OpenClawPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -173,14 +234,30 @@ func (c AppConfig) Targets() ([]FileTarget, error) {
 	}
 
 	if c.IncludeAuthProfiles {
-		if _, err := os.Stat(c.AuthProfilesPath); err == nil {
-			targets = append(targets, FileTarget{
-				Name:     "auth:" + strings.ToLower(strings.TrimSpace(c.AgentID)),
-				Path:     c.AuthProfilesPath,
-				Optional: true,
-			})
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
+		// Support multiple agents
+		for _, agentID := range c.AllAgents() {
+			authPath := filepath.Join(c.RootDir, "agents", agentID, "agent", "auth-profiles.json")
+			if _, err := os.Stat(authPath); err == nil {
+				targets = append(targets, FileTarget{
+					Name:     "auth:" + strings.ToLower(agentID),
+					Path:     authPath,
+					Optional: true,
+				})
+			}
+		}
+	}
+
+	if c.IncludeModels {
+		// Support multiple agents - models.json
+		for _, agentID := range c.AllAgents() {
+			modelsPath := filepath.Join(c.RootDir, "agents", agentID, "agent", "models.json")
+			if _, err := os.Stat(modelsPath); err == nil {
+				targets = append(targets, FileTarget{
+					Name:     "models:" + strings.ToLower(agentID),
+					Path:     modelsPath,
+					Optional: true,
+				})
+			}
 		}
 	}
 
@@ -192,6 +269,7 @@ func defaultConfig() AppConfig {
 		RootDir:             defaultRootDir(),
 		AgentID:             "main",
 		IncludeAuthProfiles: true,
+		IncludeModels:       true,
 		PollIntervalSeconds: 2,
 		RestoreOnChange:     true,
 		RestoreOnDelete:     true,
@@ -241,6 +319,9 @@ func merge(base AppConfig, override partialConfig) AppConfig {
 	}
 	if override.IncludeAuthProfiles != nil {
 		base.IncludeAuthProfiles = *override.IncludeAuthProfiles
+	}
+	if override.IncludeModels != nil {
+		base.IncludeModels = *override.IncludeModels
 	}
 	if override.BackupDir != nil {
 		base.BackupDir = *override.BackupDir

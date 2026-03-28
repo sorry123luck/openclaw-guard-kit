@@ -6,7 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -16,6 +19,8 @@ import (
 	"openclaw-guard-kit/internal/app"
 	"openclaw-guard-kit/internal/bootstrap"
 	coordsvc "openclaw-guard-kit/internal/coord"
+	guardclient "openclaw-guard-kit/internal/guard"
+	internalnotify "openclaw-guard-kit/internal/notify"
 	"openclaw-guard-kit/internal/protocol"
 	"openclaw-guard-kit/internal/robot"
 	runtimepkg "openclaw-guard-kit/internal/runtime"
@@ -29,9 +34,11 @@ type commonFlags struct {
 	ConfigPath          string
 	RootDir             string
 	AgentID             string
+	Agents              string
 	OpenClawPath        string
 	AuthProfilesPath    string
 	IncludeAuthProfiles bool
+	IncludeModels       bool
 	BackupDir           string
 	StateFile           string
 	PollIntervalSeconds int
@@ -54,6 +61,16 @@ type pipeFlags struct {
 	Mode         string
 	Reason       string
 	LogFile      string
+}
+type guardedWriteFlags struct {
+	common     *commonFlags
+	TargetPath string
+	SourcePath string
+}
+
+type openClawOpFlags struct {
+	common      *commonFlags
+	OpenClawBin string
 }
 
 func main() {
@@ -87,6 +104,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "run-service failed: %v\n", err)
 			os.Exit(1)
 		}
+
 	case "status":
 		if err := runStatus(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "status failed: %v\n", err)
@@ -95,6 +113,46 @@ func main() {
 	case "stop":
 		if err := runStop(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "stop failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "pause-monitoring":
+		if err := runPauseMonitoring(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "pause-monitoring failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "resume-monitoring":
+		if err := runResumeMonitoring(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "resume-monitoring failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "monitoring-status":
+		if err := runMonitoringStatus(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "monitoring-status failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "candidate-status":
+		if err := runCandidateStatus(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "candidate-status failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "promote-candidate":
+		if err := runPromoteCandidate(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "promote-candidate failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "discard-candidate":
+		if err := runDiscardCandidate(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "discard-candidate failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "mark-bad-candidate":
+		if err := runMarkBadCandidate(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "mark-bad-candidate failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "retry-candidate":
+		if err := runRetryCandidate(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "retry-candidate failed: %v\n", err)
 			os.Exit(1)
 		}
 	case "request-write":
@@ -110,6 +168,76 @@ func main() {
 	case "fail-write":
 		if err := runFailWrite(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "fail-write failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "guarded-write":
+		if err := runGuardedWrite(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "guarded-write failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "openclaw-op":
+		if err := runOpenClawOp(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "openclaw-op failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "complete-telegram-binding":
+		if err := runCompleteTelegramBinding(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "complete-telegram-binding failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "save-telegram-credentials":
+		if err := runSaveTelegramCredentials(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "save-telegram-credentials failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "unbind-telegram":
+		if err := runUnbindTelegram(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "unbind-telegram failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "save-feishu-credentials":
+		if err := runSaveFeishuCredentials(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "save-feishu-credentials failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "complete-feishu-binding":
+		if err := runCompleteFeishuBinding(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "complete-feishu-binding failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "unbind-feishu":
+		if err := runUnbindFeishu(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "unbind-feishu failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "test-feishu-message":
+		if err := runTestFeishuMessage(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "test-feishu-message failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "save-wecom-credentials":
+		if err := runSaveWecomCredentials(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "save-wecom-credentials failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "test-wecom-connection":
+		if err := runTestWecomConnection(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "test-wecom-connection failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "complete-wecom-binding":
+		if err := runCompleteWecomBinding(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "complete-wecom-binding failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "unbind-wecom":
+		if err := runUnbindWecom(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "unbind-wecom failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "test-wecom-message":
+		if err := runTestWecomMessage(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "test-wecom-message failed: %v\n", err)
 			os.Exit(1)
 		}
 	case "help", "-h", "--help":
@@ -131,10 +259,13 @@ func runPrepare(args []string) error {
 		ConfigPath:             flags.ConfigPath,
 		RootDir:                flags.RootDir,
 		AgentID:                normalizeAgentID(flags.AgentID),
+		Agents:                 parseAgentsList(flags.Agents),
 		OpenClawPath:           flags.OpenClawPath,
 		AuthProfilesPath:       flags.AuthProfilesPath,
 		IncludeAuthProfiles:    flags.IncludeAuthProfiles,
 		IncludeAuthProfilesSet: flagWasSet(fs, "with-auth-profiles"),
+		IncludeModels:          flags.IncludeModels,
+		IncludeModelsSet:       flagWasSet(fs, "with-models"),
 		BackupDir:              flags.BackupDir,
 		StateFile:              flags.StateFile,
 		PollIntervalSeconds:    flags.PollIntervalSeconds,
@@ -159,7 +290,7 @@ func runPrepare(args []string) error {
 	logger.Info(
 		"prepare completed",
 		"agent", cfg.AgentID,
-		"targets", len(manifest.Targets),
+		"targets", len(manifest.TrustedTargets),
 		"state", manifest.StateFile,
 	)
 	return nil
@@ -208,10 +339,13 @@ func resolveWatchConfig(args []string) (config.AppConfig, error) {
 		ConfigPath:             flags.ConfigPath,
 		RootDir:                flags.RootDir,
 		AgentID:                normalizeAgentID(flags.AgentID),
+		Agents:                 parseAgentsList(flags.Agents),
 		OpenClawPath:           flags.OpenClawPath,
 		AuthProfilesPath:       flags.AuthProfilesPath,
 		IncludeAuthProfiles:    flags.IncludeAuthProfiles,
 		IncludeAuthProfilesSet: flagWasSet(fs, "with-auth-profiles"),
+		IncludeModels:          flags.IncludeModels,
+		IncludeModelsSet:       flagWasSet(fs, "with-models"),
 		BackupDir:              flags.BackupDir,
 		StateFile:              flags.StateFile,
 		PollIntervalSeconds:    flags.PollIntervalSeconds,
@@ -229,7 +363,19 @@ func resolveWatchConfig(args []string) (config.AppConfig, error) {
 }
 
 func buildWatchApp(cfg config.AppConfig, logger *logging.Logger, stopFunc func()) (*app.App, error) {
-	notifier := notify.NewLogNotifier(logger)
+	// 初始化 notifier 所需的路径和凭证存储
+	notify.SetRootDir(cfg.RootDir)
+	notify.InitCredentialsStore(cfg.RootDir)
+
+	// 创建聚合通知器：Console + Telegram + Feishu + WeCom
+	consoleNotifier := notify.NewLogNotifier(logger)
+	telegramNotifier := notify.TelegramNotifier{}
+	feishuNotifier := notify.FeishuNotifier{}
+	wecomNotifier := notify.WeComNotifier{}
+
+	// 使用 MultiNotifier 聚合所有通知渠道
+	notifier := internalnotify.NewMultiNotifier(logger, consoleNotifier, telegramNotifier, feishuNotifier, wecomNotifier)
+
 	supervisor := process.NewNoopSupervisor(logger)
 	backupSvc := backup.NewService(logger)
 
@@ -258,6 +404,7 @@ func buildWatchApp(cfg config.AppConfig, logger *logging.Logger, stopFunc func()
 
 	coord := coordsvc.NewCoordinator(logger, dispatcher)
 	coord.ConfigureBaselineRefresh(backupSvc, cfg.StateFile)
+	coord.ConfigureBackupDir(cfg.BackupDir)
 
 	watcher := watchsvc.NewService(logger, dispatcher, backupSvc, coord)
 	pipeServer := gateway.NewPipeServer(logger, coord, dispatcher, gateway.PipeConfig{
@@ -500,15 +647,140 @@ func runFailWrite(args []string) error {
 	return nil
 }
 
+type bindingFlags struct {
+	RootDir     string
+	AccountID   string
+	Token       string
+	AppSecret   string
+	BotID       string
+	Secret      string
+	SenderID    string
+	DisplayName string
+	Code        string
+	Message     string
+	LogFile     string
+}
+
+func runCompleteTelegramBinding(args []string) error {
+	flags, fs := parseBindingFlags("complete-telegram-binding")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// 验证必要参数
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+	if flags.AccountID == "" {
+		return fmt.Errorf("account-id is required")
+	}
+	if flags.SenderID == "" {
+		return fmt.Errorf("sender-id is required")
+	}
+	if flags.Code == "" {
+		return fmt.Errorf("code is required")
+	}
+
+	logger, err := logging.New(flags.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	// 初始化 store，使用 root 绝对路径
+	notify.SetRootDir(flags.RootDir)
+	storePath := notify.BindingsPath(flags.RootDir)
+	s, err := notify.NewStore(storePath)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %v", err)
+	}
+
+	// 校验 pending：查找配对码是否存在且未过期
+	pending, found := s.FindPendingByCode("telegram", flags.AccountID, flags.Code)
+	if !found {
+		return fmt.Errorf("pairing code not found or expired")
+	}
+	// 校验 senderID 是否匹配
+	if pending.SenderID != flags.SenderID {
+		return fmt.Errorf("senderID mismatch")
+	}
+
+	// 调用 store.MarkBound（软件通知绑定）- 注意：MarkBound 内部已清理 pending
+	record, err := s.MarkBound(
+		"telegram",
+		flags.AccountID,
+		flags.SenderID,
+		flags.DisplayName,
+		flags.Code,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to mark bound: %v", err)
+	}
+
+	// 自动发送确认消息（绑定成功后）
+	notify.InitCredentialsStore(flags.RootDir)
+	token := notify.GetTelegramToken()
+	chatID, err := strconv.ParseInt(flags.SenderID, 10, 64)
+	confirmationStatus := "unknown"
+	if err != nil {
+		confirmationStatus = "failed"
+		fmt.Printf("binding completed, but failed to parse chatID for confirmation: %v\n", err)
+	} else {
+		success, errMsg := notify.SendTelegramMessage(token, chatID, "🔔 OpenClaw Guard 绑定成功！您现在会收到来自 OpenClaw 的通知。")
+		if !success {
+			// 绑定已保存成功，但确认消息发送失败，不回滚绑定
+			confirmationStatus = "failed"
+			fmt.Printf("binding completed, but confirmation message failed: %s\n", errMsg)
+			// 持久化失败结果
+			_ = s.UpdateBindingTestResult("telegram", flags.AccountID, flags.SenderID, errMsg, "failed")
+		} else {
+			confirmationStatus = "ok"
+			// 持久化成功结果
+			_ = s.UpdateBindingTestResult("telegram", flags.AccountID, flags.SenderID, "连接成功", "ok")
+		}
+	}
+
+	fmt.Printf("binding completed successfully\n")
+	fmt.Printf("id: %s\n", record.ID)
+	fmt.Printf("channel: %s\n", record.Channel)
+	fmt.Printf("accountId: %s\n", record.AccountID)
+	fmt.Printf("senderId: %s\n", record.SenderID)
+	fmt.Printf("displayName: %s\n", record.DisplayName)
+	fmt.Printf("pairingCode: %s\n", record.PairingCode)
+	fmt.Printf("status: %s\n", record.Status)
+	fmt.Printf("confirmationSent: %s\n", confirmationStatus)
+
+	return nil
+}
+
+func parseBindingFlags(name string) (*bindingFlags, *flag.FlagSet) {
+	cfg := &bindingFlags{}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.StringVar(&cfg.RootDir, "root", "", "root directory (OpenClaw data directory)")
+	fs.StringVar(&cfg.AccountID, "account-id", "", "account id (telegram bot id / feishu app id / wecom bot id)")
+	fs.StringVar(&cfg.Token, "token", "", "telegram bot token")
+	fs.StringVar(&cfg.AppSecret, "app-secret", "", "feishu app secret")
+	fs.StringVar(&cfg.BotID, "bot-id", "", "wecom bot id")
+	fs.StringVar(&cfg.Secret, "secret", "", "wecom bot secret")
+	fs.StringVar(&cfg.SenderID, "sender-id", "", "sender id (telegram chat id / feishu open_id / wecom user_id)")
+	fs.StringVar(&cfg.DisplayName, "display-name", "", "display name")
+	fs.StringVar(&cfg.Code, "code", "", "pairing code")
+	fs.StringVar(&cfg.Message, "message", "", "test message content")
+	fs.StringVar(&cfg.LogFile, "log-file", "", "optional log file path")
+	return cfg, fs
+}
+
 func parseCommonFlags(name string) (*commonFlags, *flag.FlagSet) {
 	cfg := &commonFlags{}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.StringVar(&cfg.ConfigPath, "config", "", "optional JSON config file")
 	fs.StringVar(&cfg.RootDir, "root", "", "root directory of the guarded files")
-	fs.StringVar(&cfg.AgentID, "agent", "main", "agent id whose auth-profiles.json should be guarded")
+	fs.StringVar(&cfg.AgentID, "agent", "main", "agent id (default context for operations)")
+	fs.StringVar(&cfg.Agents, "agents", "", "comma-separated list of agents to protect (default: auto-detect all)")
 	fs.StringVar(&cfg.OpenClawPath, "openclaw", "", "path to openclaw.json")
 	fs.StringVar(&cfg.AuthProfilesPath, "auth-profiles", "", "path to auth-profiles.json")
 	fs.BoolVar(&cfg.IncludeAuthProfiles, "with-auth-profiles", true, "include auth-profiles.json when it exists")
+	fs.BoolVar(&cfg.IncludeModels, "with-models", true, "include models.json when it exists")
 	fs.StringVar(&cfg.BackupDir, "backup-dir", "", "directory storing baseline backups")
 	fs.StringVar(&cfg.StateFile, "state-file", "", "manifest file path")
 	fs.IntVar(&cfg.PollIntervalSeconds, "interval", 2, "polling interval in seconds (watch only)")
@@ -536,7 +808,20 @@ func parsePipeFlags(name string) (*pipeFlags, *flag.FlagSet) {
 	fs.StringVar(&cfg.LogFile, "log-file", "", "optional log file path")
 	return cfg, fs
 }
+func parseGuardedWriteFlags(name string) (*guardedWriteFlags, *flag.FlagSet) {
+	common, fs := parseCommonFlags(name)
+	cfg := &guardedWriteFlags{common: common}
+	fs.StringVar(&cfg.TargetPath, "path", "", "target protected file path")
+	fs.StringVar(&cfg.SourcePath, "from", "", "source file containing new content")
+	return cfg, fs
+}
 
+func parseOpenClawOpFlags(name string) (*openClawOpFlags, *flag.FlagSet) {
+	common, fs := parseCommonFlags(name)
+	cfg := &openClawOpFlags{common: common}
+	fs.StringVar(&cfg.OpenClawBin, "openclaw-bin", "", "optional OpenClaw executable path")
+	return cfg, fs
+}
 func printMessage(msg protocol.Message) {
 	fmt.Printf("type: %s\n", msg.Type)
 	fmt.Printf("status: %s\n", msg.Status)
@@ -629,7 +914,588 @@ func ensureReleaseTargetSpecified(cmd string, flags *pipeFlags) error {
 		cmd,
 	)
 }
+func runGuardedWrite(args []string) error {
+	flags, fs := parseGuardedWriteFlags("guarded-write")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
+	targetPath := strings.TrimSpace(flags.TargetPath)
+	if targetPath == "" {
+		return fmt.Errorf("guarded-write requires --path")
+	}
+	sourcePath := strings.TrimSpace(flags.SourcePath)
+	if sourcePath == "" {
+		return fmt.Errorf("guarded-write requires --from")
+	}
+
+	cfg, err := resolveCommonConfig(flags.common, fs)
+	if err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return fmt.Errorf("read --from file failed: %w", err)
+	}
+
+	guardExe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve guard executable failed: %w", err)
+	}
+
+	client := guardclient.NewClient(guardExe, cfg.RootDir, normalizeAgentID(flags.common.AgentID))
+	if err := client.WriteFile(context.Background(), targetPath, data); err != nil {
+		return err
+	}
+
+	resolvedTargetPath := targetPath
+	if !filepath.IsAbs(resolvedTargetPath) {
+		resolvedTargetPath = filepath.Join(cfg.RootDir, resolvedTargetPath)
+	}
+	resolvedSourcePath, err := filepath.Abs(sourcePath)
+	if err != nil {
+		resolvedSourcePath = sourcePath
+	}
+
+	fmt.Println("operation: guarded-write")
+	fmt.Println("status: ok")
+	fmt.Printf("agentId: %s\n", normalizeAgentID(flags.common.AgentID))
+	fmt.Printf("path: %s\n", resolvedTargetPath)
+	fmt.Printf("from: %s\n", resolvedSourcePath)
+	fmt.Printf("bytes: %d\n", len(data))
+	return nil
+}
+
+func runOpenClawOp(args []string) error {
+	flags, fs := parseOpenClawOpFlags("openclaw-op")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := resolveCommonConfig(flags.common, fs)
+	if err != nil {
+		return err
+	}
+
+	commandArgs := fs.Args()
+	if len(commandArgs) == 0 {
+		return fmt.Errorf("openclaw-op requires an OpenClaw command after --")
+	}
+
+	monitoringWasPaused, err := isMonitoringPaused(cfg)
+	if err != nil {
+		return err
+	}
+
+	pausedByThisCommand := false
+	if !monitoringWasPaused {
+		if err := pauseMonitoring(cfg); err != nil {
+			return err
+		}
+		pausedByThisCommand = true
+	}
+
+	output, cmdErr := runOpenClawCommand(commandArgs, strings.TrimSpace(flags.OpenClawBin))
+
+	resumedByThisCommand := false
+	var resumeErr error
+	if pausedByThisCommand {
+		resumeErr = resumeMonitoring(cfg)
+		if resumeErr == nil {
+			resumedByThisCommand = true
+		}
+	}
+
+	fmt.Println("operation: openclaw-op")
+	fmt.Println("mode: compatibility")
+	fmt.Println("flow: pause-monitoring -> openclaw-command -> resume-monitoring")
+	if cmdErr == nil && resumeErr == nil {
+		fmt.Println("status: ok")
+	} else {
+		fmt.Println("status: failed")
+	}
+	fmt.Printf("monitoringWasPaused: %t\n", monitoringWasPaused)
+	fmt.Printf("pausedByThisCommand: %t\n", pausedByThisCommand)
+	fmt.Printf("resumedByThisCommand: %t\n", resumedByThisCommand)
+	fmt.Printf("command: %s\n", strings.Join(commandArgs, " "))
+	if output != "" {
+		fmt.Println("commandOutput:")
+		fmt.Println(output)
+	}
+
+	if cmdErr != nil && resumeErr != nil {
+		return fmt.Errorf("OpenClaw command failed: %v; resume-monitoring also failed: %w", cmdErr, resumeErr)
+	}
+	if cmdErr != nil {
+		return fmt.Errorf("OpenClaw command failed: %w", cmdErr)
+	}
+	if resumeErr != nil {
+		return fmt.Errorf("OpenClaw command succeeded but resume-monitoring failed: %w", resumeErr)
+	}
+	return nil
+}
+
+func isMonitoringPaused(cfg config.AppConfig) (bool, error) {
+	path := monitoringPauseFilePath(cfg)
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func pauseMonitoring(cfg config.AppConfig) error {
+	path := monitoringPauseFilePath(cfg)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("paused=true\n"), 0644)
+}
+
+func resumeMonitoring(cfg config.AppConfig) error {
+	logger, err := logging.New(cfg.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	backupSvc := backup.NewService(logger)
+	if err := createMonitoringCandidatesFromCurrent(context.Background(), backupSvc, cfg); err != nil {
+		return err
+	}
+
+	path := monitoringPauseFilePath(cfg)
+	err = os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func runOpenClawCommand(commandArgs []string, explicitBin string) (string, error) {
+	cmdArgs := append([]string(nil), commandArgs...)
+	if len(cmdArgs) == 0 {
+		return "", fmt.Errorf("empty command")
+	}
+
+	commandPath := strings.TrimSpace(explicitBin)
+	if commandPath == "" {
+		first := strings.TrimSpace(cmdArgs[0])
+		if strings.EqualFold(first, "openclaw") || strings.EqualFold(first, "openclaw.exe") || strings.EqualFold(first, "openclaw.cmd") {
+			commandPath = first
+			cmdArgs = cmdArgs[1:]
+		} else {
+			commandPath = "openclaw"
+		}
+	}
+
+	cmd := exec.Command(commandPath, cmdArgs...)
+	output, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(output))
+	if err != nil {
+		if text != "" {
+			return text, fmt.Errorf("%s", text)
+		}
+		return text, err
+	}
+	return text, nil
+}
+func resolveCommonConfig(flags *commonFlags, fs *flag.FlagSet) (config.AppConfig, error) {
+	return config.Resolve(config.Options{
+		ConfigPath:             flags.ConfigPath,
+		RootDir:                flags.RootDir,
+		AgentID:                normalizeAgentID(flags.AgentID),
+		Agents:                 parseAgentsList(flags.Agents),
+		OpenClawPath:           flags.OpenClawPath,
+		AuthProfilesPath:       flags.AuthProfilesPath,
+		IncludeAuthProfiles:    flags.IncludeAuthProfiles,
+		IncludeAuthProfilesSet: flagWasSet(fs, "with-auth-profiles"),
+		IncludeModels:          flags.IncludeModels,
+		IncludeModelsSet:       flagWasSet(fs, "with-models"),
+		BackupDir:              flags.BackupDir,
+		StateFile:              flags.StateFile,
+		PollIntervalSeconds:    flags.PollIntervalSeconds,
+		LogFile:                flags.LogFile,
+	})
+}
+func resolveMonitoringConfig(args []string, name string) (config.AppConfig, error) {
+	flags, fs := parseCommonFlags(name)
+	if err := fs.Parse(args); err != nil {
+		return config.AppConfig{}, err
+	}
+
+	cfg, err := resolveCommonConfig(flags, fs)
+	if err != nil {
+		return config.AppConfig{}, err
+	}
+
+	return cfg, nil
+}
+
+func monitoringPauseFilePath(cfg config.AppConfig) string {
+	return filepath.Join(filepath.Dir(cfg.StateFile), "monitor.paused")
+}
+
+func runPauseMonitoring(args []string) error {
+	cfg, err := resolveMonitoringConfig(args, "pause-monitoring")
+	if err != nil {
+		return err
+	}
+
+	path := monitoringPauseFilePath(cfg)
+	if err := pauseMonitoring(cfg); err != nil {
+		return err
+	}
+
+	fmt.Printf("monitoring paused\n")
+	fmt.Printf("pauseFile: %s\n", path)
+	return nil
+}
+
+func runResumeMonitoring(args []string) error {
+	cfg, err := resolveMonitoringConfig(args, "resume-monitoring")
+	if err != nil {
+		return err
+	}
+
+	path := monitoringPauseFilePath(cfg)
+	if err := resumeMonitoring(cfg); err != nil {
+		return err
+	}
+
+	fmt.Printf("monitoring resumed\n")
+	fmt.Printf("candidate snapshots created from current files\n")
+	fmt.Printf("pauseFile: %s\n", path)
+	return nil
+}
+
+func createMonitoringCandidatesFromCurrent(ctx context.Context, backupSvc *backup.Service, cfg config.AppConfig) error {
+	manifest, err := backup.LoadManifest(cfg.StateFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			_, err := backupSvc.Prepare(ctx, cfg)
+			return err
+		}
+		return err
+	}
+
+	if len(manifest.TrustedTargets) == 0 {
+		_, err := backupSvc.Prepare(ctx, cfg)
+		return err
+	}
+
+	for _, snapshot := range manifest.TrustedTargets {
+		targetName := strings.TrimSpace(snapshot.TargetKeyOrName())
+		if targetName == "" {
+			targetName = strings.TrimSpace(snapshot.Name)
+		}
+		if targetName == "" {
+			continue
+		}
+
+		candidate, err := backupSvc.CreateCandidateSnapshot(ctx, config.FileTarget{
+			Name: targetName,
+			Path: snapshot.SourcePath,
+		}, cfg.BackupDir)
+		if err != nil {
+			return fmt.Errorf("create candidate snapshot for %s failed: %w", targetName, err)
+		}
+
+		if candidate.TargetKey == "" {
+			candidate.TargetKey = snapshot.TargetKey
+		}
+		if candidate.Kind == "" {
+			candidate.Kind = snapshot.Kind
+		}
+		if candidate.AgentID == "" {
+			candidate.AgentID = snapshot.AgentID
+		}
+
+		if err := backupSvc.UpsertCandidateSnapshot(cfg.StateFile, candidate); err != nil {
+			return fmt.Errorf("persist candidate snapshot for %s failed: %w", targetName, err)
+		}
+	}
+
+	return nil
+}
+
+func parseCandidateFlags(name string) (*commonFlags, *flag.FlagSet, *string) {
+	flags, fs := parseCommonFlags(name)
+	target := fs.String("target", "", "candidate target key, e.g. openclaw / auth:main / models:tester")
+	return flags, fs, target
+}
+
+func runCandidateStatus(args []string) error {
+	flags, fs, _ := parseCandidateFlags("candidate-status")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Resolve(config.Options{
+		ConfigPath:             flags.ConfigPath,
+		RootDir:                flags.RootDir,
+		AgentID:                normalizeAgentID(flags.AgentID),
+		Agents:                 parseAgentsList(flags.Agents),
+		OpenClawPath:           flags.OpenClawPath,
+		AuthProfilesPath:       flags.AuthProfilesPath,
+		IncludeAuthProfiles:    flags.IncludeAuthProfiles,
+		IncludeAuthProfilesSet: flagWasSet(fs, "with-auth-profiles"),
+		IncludeModels:          flags.IncludeModels,
+		IncludeModelsSet:       flagWasSet(fs, "with-models"),
+		BackupDir:              flags.BackupDir,
+		StateFile:              flags.StateFile,
+		PollIntervalSeconds:    flags.PollIntervalSeconds,
+		LogFile:                flags.LogFile,
+	})
+	if err != nil {
+		return err
+	}
+
+	manifest, err := backup.LoadManifest(cfg.StateFile)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("trustedTargets: %d\n", len(manifest.TrustedTargets))
+	for _, snapshot := range manifest.TrustedTargets {
+		fmt.Printf("trusted: %s | %s | %s\n", snapshot.TargetKeyOrName(), snapshot.SourcePath, snapshot.BackupPath)
+	}
+
+	fmt.Printf("candidateTargets: %d\n", len(manifest.CandidateTargets))
+	for _, snapshot := range manifest.CandidateTargets {
+		fmt.Printf("candidate: %s | state=%s | source=%s | backup=%s\n",
+			snapshot.TargetKeyOrName(),
+			candidateStateText(snapshot.State),
+			snapshot.SourcePath,
+			snapshot.BackupPath,
+		)
+	}
+
+	return nil
+}
+func candidateStateText(state backup.SnapshotState) string {
+	switch state {
+	case backup.SnapshotStateCandidate:
+		return "candidate"
+	case backup.SnapshotStateHealthy:
+		return "healthy"
+	case backup.SnapshotStateBad:
+		return "bad"
+	default:
+		return "unknown"
+	}
+}
+func runPromoteCandidate(args []string) error {
+	flags, fs, target := parseCandidateFlags("promote-candidate")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	targetName := strings.TrimSpace(*target)
+	if targetName == "" {
+		return errors.New("promote-candidate requires --target")
+	}
+
+	cfg, err := config.Resolve(config.Options{
+		ConfigPath:             flags.ConfigPath,
+		RootDir:                flags.RootDir,
+		AgentID:                normalizeAgentID(flags.AgentID),
+		Agents:                 parseAgentsList(flags.Agents),
+		OpenClawPath:           flags.OpenClawPath,
+		AuthProfilesPath:       flags.AuthProfilesPath,
+		IncludeAuthProfiles:    flags.IncludeAuthProfiles,
+		IncludeAuthProfilesSet: flagWasSet(fs, "with-auth-profiles"),
+		IncludeModels:          flags.IncludeModels,
+		IncludeModelsSet:       flagWasSet(fs, "with-models"),
+		BackupDir:              flags.BackupDir,
+		StateFile:              flags.StateFile,
+		PollIntervalSeconds:    flags.PollIntervalSeconds,
+		LogFile:                flags.LogFile,
+	})
+	if err != nil {
+		return err
+	}
+
+	logger, err := logging.New(cfg.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	backupSvc := backup.NewService(logger)
+	if err := backupSvc.PromoteSnapshotToHealthy(cfg.StateFile, targetName); err != nil {
+		return err
+	}
+
+	fmt.Printf("candidate promoted\n")
+	fmt.Printf("target: %s\n", targetName)
+	return nil
+}
+
+func runDiscardCandidate(args []string) error {
+	flags, fs, target := parseCandidateFlags("discard-candidate")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	targetName := strings.TrimSpace(*target)
+	if targetName == "" {
+		return errors.New("discard-candidate requires --target")
+	}
+
+	cfg, err := config.Resolve(config.Options{
+		ConfigPath:             flags.ConfigPath,
+		RootDir:                flags.RootDir,
+		AgentID:                normalizeAgentID(flags.AgentID),
+		Agents:                 parseAgentsList(flags.Agents),
+		OpenClawPath:           flags.OpenClawPath,
+		AuthProfilesPath:       flags.AuthProfilesPath,
+		IncludeAuthProfiles:    flags.IncludeAuthProfiles,
+		IncludeAuthProfilesSet: flagWasSet(fs, "with-auth-profiles"),
+		IncludeModels:          flags.IncludeModels,
+		IncludeModelsSet:       flagWasSet(fs, "with-models"),
+		BackupDir:              flags.BackupDir,
+		StateFile:              flags.StateFile,
+		PollIntervalSeconds:    flags.PollIntervalSeconds,
+		LogFile:                flags.LogFile,
+	})
+	if err != nil {
+		return err
+	}
+
+	logger, err := logging.New(cfg.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	backupSvc := backup.NewService(logger)
+	if err := backupSvc.DiscardCandidate(cfg.StateFile, targetName); err != nil {
+		return err
+	}
+
+	fmt.Printf("candidate discarded\n")
+	fmt.Printf("target: %s\n", targetName)
+	return nil
+}
+func runMarkBadCandidate(args []string) error {
+	flags, fs, target := parseCandidateFlags("mark-bad-candidate")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	targetName := strings.TrimSpace(*target)
+	if targetName == "" {
+		return errors.New("mark-bad-candidate requires --target")
+	}
+
+	cfg, err := config.Resolve(config.Options{
+		ConfigPath:             flags.ConfigPath,
+		RootDir:                flags.RootDir,
+		AgentID:                normalizeAgentID(flags.AgentID),
+		Agents:                 parseAgentsList(flags.Agents),
+		OpenClawPath:           flags.OpenClawPath,
+		AuthProfilesPath:       flags.AuthProfilesPath,
+		IncludeAuthProfiles:    flags.IncludeAuthProfiles,
+		IncludeAuthProfilesSet: flagWasSet(fs, "with-auth-profiles"),
+		IncludeModels:          flags.IncludeModels,
+		IncludeModelsSet:       flagWasSet(fs, "with-models"),
+		BackupDir:              flags.BackupDir,
+		StateFile:              flags.StateFile,
+		PollIntervalSeconds:    flags.PollIntervalSeconds,
+		LogFile:                flags.LogFile,
+	})
+	if err != nil {
+		return err
+	}
+
+	logger, err := logging.New(cfg.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	backupSvc := backup.NewService(logger)
+	if err := backupSvc.MarkSnapshotAsBad(cfg.StateFile, targetName); err != nil {
+		return err
+	}
+
+	fmt.Printf("candidate marked bad\n")
+	fmt.Printf("target: %s\n", targetName)
+	return nil
+}
+
+func runRetryCandidate(args []string) error {
+	flags, fs, target := parseCandidateFlags("retry-candidate")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	targetName := strings.TrimSpace(*target)
+	if targetName == "" {
+		return errors.New("retry-candidate requires --target")
+	}
+
+	cfg, err := config.Resolve(config.Options{
+		ConfigPath:             flags.ConfigPath,
+		RootDir:                flags.RootDir,
+		AgentID:                normalizeAgentID(flags.AgentID),
+		Agents:                 parseAgentsList(flags.Agents),
+		OpenClawPath:           flags.OpenClawPath,
+		AuthProfilesPath:       flags.AuthProfilesPath,
+		IncludeAuthProfiles:    flags.IncludeAuthProfiles,
+		IncludeAuthProfilesSet: flagWasSet(fs, "with-auth-profiles"),
+		IncludeModels:          flags.IncludeModels,
+		IncludeModelsSet:       flagWasSet(fs, "with-models"),
+		BackupDir:              flags.BackupDir,
+		StateFile:              flags.StateFile,
+		PollIntervalSeconds:    flags.PollIntervalSeconds,
+		LogFile:                flags.LogFile,
+	})
+	if err != nil {
+		return err
+	}
+
+	logger, err := logging.New(cfg.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	backupSvc := backup.NewService(logger)
+	if err := backupSvc.RetryCandidate(cfg.StateFile, targetName); err != nil {
+		return err
+	}
+
+	fmt.Printf("candidate retry requested\n")
+	fmt.Printf("target: %s\n", targetName)
+	return nil
+}
+func runMonitoringStatus(args []string) error {
+	cfg, err := resolveMonitoringConfig(args, "monitoring-status")
+	if err != nil {
+		return err
+	}
+
+	path := monitoringPauseFilePath(cfg)
+	_, err = os.Stat(path)
+	if err == nil {
+		fmt.Println("monitoring: paused")
+		fmt.Printf("pauseFile: %s\n", path)
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+
+	fmt.Println("monitoring: active")
+	fmt.Printf("pauseFile: %s\n", path)
+	return nil
+}
 func usage() {
 	text := `openclaw-guard-kit / guard.exe (v2)
 
@@ -639,6 +1505,28 @@ Usage:
   guard status  [flags]
   guard stop    [flags]
   guard run-service [flags]
+  guard pause-monitoring  [flags]
+  guard resume-monitoring [flags]
+  guard monitoring-status [flags]
+  guard candidate-status [flags]
+  guard promote-candidate [flags]
+  guard discard-candidate [flags]
+  guard guarded-write [flags]
+  guard openclaw-op [flags] -- <openclaw args>
+
+  guard save-telegram-credentials [flags]
+  guard complete-telegram-binding [flags]
+  guard unbind-telegram [flags]
+
+  guard save-feishu-credentials [flags]
+  guard complete-feishu-binding [flags]
+  guard unbind-feishu [flags]
+  guard test-feishu-message [flags]
+  guard save-wecom-credentials [flags]
+  guard test-wecom-connection [flags]
+  guard complete-wecom-binding [flags]
+  guard unbind-wecom [flags]
+  guard test-wecom-message [flags]
 
 Testing commands:
   guard request-write  [flags]
@@ -648,8 +1536,18 @@ Testing commands:
 Implemented in v2:
   - prepare: baseline backup for guarded targets
   - watch:   daemon watch + restore from baseline + named pipe server
-  - status:  check whether guard watch is running
+    - status:  check whether guard watch is running
   - stop:    request running guard watch to stop gracefully
+  - pause-monitoring:  pause drift restore by creating monitor.paused
+  - resume-monitoring: resume drift restore by removing monitor.paused
+  - monitoring-status: show whether monitoring is paused
+  - candidate-status: show trusted/candidate snapshot summary
+  - promote-candidate: manually promote one candidate target to trusted
+  - discard-candidate: discard one blocked/unwanted candidate target
+  - mark-bad-candidate: mark one candidate target as bad and stop auto verification
+  - retry-candidate: reset one bad candidate target back to candidate for re-verification
+  - guarded-write: primary protected config write path (lease + atomic local write + complete/fail)
+  - openclaw-op: compatibility path only (pause monitoring -> run OpenClaw command -> resume monitoring)
   - pipe:    dynamic write request / complete / fail testing
   - run-service: internal Windows service entrypoint
 
@@ -658,17 +1556,657 @@ Examples:
   guard watch --root C:\Users\Administrator\.openclaw --agent main --interval 2
   guard status
   guard stop
+  guard pause-monitoring --root C:\Users\Administrator\.openclaw
+  guard resume-monitoring --root C:\Users\Administrator\.openclaw
+  guard monitoring-status --root C:\Users\Administrator\.openclaw
+  guard candidate-status --root C:\Users\Administrator\.openclaw
+  guard promote-candidate --root C:\Users\Administrator\.openclaw --target auth:main
+  guard discard-candidate --root C:\Users\Administrator\.openclaw --target auth:main
 
   guard request-write --agent main --target-key openclaw --kind openclaw --client test-cli --request req-1 --lease 180
   guard request-write --agent main --kind auth-profiles --path C:\Users\Administrator\.openclaw\agents\main\agent\auth-profiles.json --client test-cli --request req-2 --lease 180 --mode block --wait 30
 
   guard complete-write --lease-id lease-123456789 --target-key openclaw --kind openclaw
   guard fail-write --lease-id lease-123456789 --target-key openclaw --kind openclaw --reason manual-test
+  guard guarded-write --root C:\Users\Administrator\.openclaw --agent main --path C:\Users\Administrator\.openclaw\openclaw.json --from C:\temp\openclaw.json
+  guard guarded-write --root C:\Users\Administrator\.openclaw --agent main --path C:\Users\Administrator\.openclaw\agents\main\agent\auth-profiles.json --from C:\temp\auth-profiles.json
+  guard openclaw-op --root C:\Users\Administrator\.openclaw --agent main -- <OpenClaw native operation requiring compatibility flow>
 
   guard complete-write --lease-id lease-123456789 --agent main --target-key auth:main --kind auth-profiles --client test-cli --request req-auth-complete
   guard fail-write --lease-id lease-123456789 --agent main --target-key auth:main --kind auth-profiles --client test-cli --request req-auth-fail
+  guard save-feishu-credentials --root C:\Users\Administrator\.openclaw --account-id cli_xxx --app-secret yyy
+  guard complete-feishu-binding --root C:\Users\Administrator\.openclaw --account-id cli_xxx --sender-id ou_xxx --display-name 张三 --code ABC123
+  guard unbind-feishu --root C:\Users\Administrator\.openclaw
+  guard test-feishu-message --root C:\Users\Administrator\.openclaw
+  guard save-wecom-credentials --root C:\Users\Administrator\.openclaw --bot-id xxx --secret yyy
+  guard test-wecom-connection --root C:\Users\Administrator\.openclaw
+  guard complete-wecom-binding --root C:\Users\Administrator\.openclaw --account-id ww_xxx --sender-id zhangsan --display-name 张三 --code ABC123
+  guard unbind-wecom --root C:\Users\Administrator\.openclaw
+  guard test-wecom-message --root C:\Users\Administrator\.openclaw
+  guard mark-bad-candidate --root C:\Users\Administrator\.openclaw --target auth:main
+  guard retry-candidate --root C:\Users\Administrator\.openclaw --target auth:main
 `
 	fmt.Fprintln(os.Stdout, strings.TrimSpace(text))
 }
 
 var errNoTargets = errors.New("no watched targets were resolved")
+
+// parseAgentsList parses a comma-separated string of agent IDs into a slice.
+// It trims whitespace, removes duplicates, and returns nil for empty input.
+func parseAgentsList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	seen := make(map[string]bool)
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" && !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// runSaveTelegramCredentials 保存 Telegram 凭证到 credentials store
+func runSaveTelegramCredentials(args []string) error {
+	flags, fs := parseBindingFlags("save-telegram-credentials")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+	if flags.Token == "" {
+		return fmt.Errorf("--token is required")
+	}
+
+	// 初始化 credentials store
+	notify.InitCredentialsStore(flags.RootDir)
+
+	// 保存凭证
+	store, err := notify.NewCredentialsStore(notify.CredentialsPath(flags.RootDir))
+	if err != nil {
+		return fmt.Errorf("failed to open credentials store: %v", err)
+	}
+
+	if err := store.SetTelegramCredentials(flags.Token); err != nil {
+		return fmt.Errorf("failed to save credentials: %v", err)
+	}
+
+	fmt.Println("Telegram credentials saved successfully")
+	return nil
+}
+
+// runUnbindTelegram 解除 Telegram 绑定
+func runUnbindTelegram(args []string) error {
+	flags, fs := parseBindingFlags("unbind-telegram")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+
+	// 初始化 store
+	notify.SetRootDir(flags.RootDir)
+	storePath := notify.BindingsPath(flags.RootDir)
+	s, err := notify.NewStore(storePath)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %v", err)
+	}
+
+	// 查找 Telegram 绑定
+	bindings := s.ListBindings()
+	var targetBinding notify.BindingRecord
+	for _, b := range bindings {
+		if b.Channel == "telegram" && b.Status == notify.BindingStatusBound {
+			targetBinding = b
+			break
+		}
+	}
+
+	if targetBinding.ID == "" {
+		return fmt.Errorf("no active Telegram binding found")
+	}
+
+	// 撤销绑定
+	if err := s.RevokeBinding("telegram", targetBinding.AccountID, targetBinding.SenderID); err != nil {
+		return fmt.Errorf("failed to revoke binding: %v", err)
+	}
+
+	fmt.Println("Telegram binding revoked successfully")
+	fmt.Printf("id: %s\n", targetBinding.ID)
+	fmt.Printf("accountId: %s\n", targetBinding.AccountID)
+	fmt.Printf("senderId: %s\n", targetBinding.SenderID)
+
+	return nil
+}
+
+// runSaveFeishuCredentials 保存 Feishu 凭证到 credentials store
+func runSaveFeishuCredentials(args []string) error {
+	flags, fs := parseBindingFlags("save-feishu-credentials")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+	if flags.AccountID == "" {
+		return fmt.Errorf("--account-id is required")
+	}
+	if flags.AppSecret == "" {
+		return fmt.Errorf("--app-secret is required")
+	}
+
+	if err := notify.VerifyFeishuCredentials(flags.AccountID, flags.AppSecret); err != nil {
+		return fmt.Errorf("invalid feishu credentials: %v", err)
+	}
+
+	notify.InitCredentialsStore(flags.RootDir)
+
+	store, err := notify.NewCredentialsStore(notify.CredentialsPath(flags.RootDir))
+	if err != nil {
+		return fmt.Errorf("failed to open credentials store: %v", err)
+	}
+
+	if err := store.SetFeishuCredentials(flags.AccountID, flags.AppSecret); err != nil {
+		return fmt.Errorf("failed to save feishu credentials: %v", err)
+	}
+
+	fmt.Println("Feishu credentials saved successfully")
+	fmt.Printf("accountId: %s\n", flags.AccountID)
+	return nil
+}
+
+// runCompleteFeishuBinding 完成 Feishu 绑定
+func runCompleteFeishuBinding(args []string) error {
+	flags, fs := parseBindingFlags("complete-feishu-binding")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+	if flags.AccountID == "" {
+		return fmt.Errorf("--account-id is required")
+	}
+	if flags.SenderID == "" {
+		return fmt.Errorf("--sender-id is required")
+	}
+	if flags.Code == "" {
+		return fmt.Errorf("--code is required")
+	}
+
+	logger, err := logging.New(flags.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	notify.SetRootDir(flags.RootDir)
+	storePath := notify.BindingsPath(flags.RootDir)
+	s, err := notify.NewStore(storePath)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %v", err)
+	}
+
+	pending, found := s.FindPendingByCode("feishu", flags.AccountID, flags.Code)
+	if !found {
+		return fmt.Errorf("pairing code not found or expired")
+	}
+	if pending.SenderID != flags.SenderID {
+		return fmt.Errorf("senderID mismatch")
+	}
+
+	record, err := s.MarkBound(
+		"feishu",
+		flags.AccountID,
+		flags.SenderID,
+		flags.DisplayName,
+		flags.Code,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to mark bound: %v", err)
+	}
+
+	notify.InitCredentialsStore(flags.RootDir)
+	appID, appSecret := notify.GetFeishuCredentials()
+	if strings.TrimSpace(appID) == "" {
+		appID = strings.TrimSpace(flags.AccountID)
+	}
+	if strings.TrimSpace(appSecret) == "" {
+		appSecret = strings.TrimSpace(flags.AppSecret)
+	}
+
+	confirmationStatus := "unknown"
+	if strings.TrimSpace(appID) == "" || strings.TrimSpace(appSecret) == "" {
+		confirmationStatus = "failed"
+		fmt.Printf("binding completed, but feishu credentials not found for confirmation\n")
+		_ = s.UpdateBindingTestResult("feishu", flags.AccountID, flags.SenderID, "feishu credentials not found", "failed")
+	} else {
+		success, errMsg := notify.SendFeishuMessage(
+			appID,
+			appSecret,
+			flags.SenderID,
+			"🔔 OpenClaw Guard 绑定成功！您现在会收到来自 OpenClaw 的通知。",
+		)
+		if !success {
+			confirmationStatus = "failed"
+			fmt.Printf("binding completed, but confirmation message failed: %s\n", errMsg)
+			_ = s.UpdateBindingTestResult("feishu", flags.AccountID, flags.SenderID, errMsg, "failed")
+		} else {
+			confirmationStatus = "ok"
+			_ = s.UpdateBindingTestResult("feishu", flags.AccountID, flags.SenderID, "连接成功", "ok")
+		}
+	}
+
+	fmt.Printf("binding completed successfully\n")
+	fmt.Printf("id: %s\n", record.ID)
+	fmt.Printf("channel: %s\n", record.Channel)
+	fmt.Printf("accountId: %s\n", record.AccountID)
+	fmt.Printf("senderId: %s\n", record.SenderID)
+	fmt.Printf("displayName: %s\n", record.DisplayName)
+	fmt.Printf("pairingCode: %s\n", record.PairingCode)
+	fmt.Printf("status: %s\n", record.Status)
+	fmt.Printf("confirmationSent: %s\n", confirmationStatus)
+
+	return nil
+}
+
+// runUnbindFeishu 解除 Feishu 绑定
+func runUnbindFeishu(args []string) error {
+	flags, fs := parseBindingFlags("unbind-feishu")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+
+	notify.SetRootDir(flags.RootDir)
+	storePath := notify.BindingsPath(flags.RootDir)
+	s, err := notify.NewStore(storePath)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %v", err)
+	}
+
+	bindings := s.ListBindings()
+	var targetBinding notify.BindingRecord
+	for _, b := range bindings {
+		if b.Channel == "feishu" && b.Status == notify.BindingStatusBound {
+			targetBinding = b
+			break
+		}
+	}
+
+	if targetBinding.ID == "" {
+		return fmt.Errorf("no active Feishu binding found")
+	}
+
+	if err := s.RevokeBinding("feishu", targetBinding.AccountID, targetBinding.SenderID); err != nil {
+		return fmt.Errorf("failed to revoke binding: %v", err)
+	}
+
+	fmt.Println("Feishu binding revoked successfully")
+	fmt.Printf("id: %s\n", targetBinding.ID)
+	fmt.Printf("accountId: %s\n", targetBinding.AccountID)
+	fmt.Printf("senderId: %s\n", targetBinding.SenderID)
+
+	return nil
+}
+
+// runTestFeishuMessage 发送 Feishu 测试消息
+func runTestFeishuMessage(args []string) error {
+	flags, fs := parseBindingFlags("test-feishu-message")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+
+	notify.InitCredentialsStore(flags.RootDir)
+	appID, appSecret := notify.GetFeishuCredentials()
+	if strings.TrimSpace(appID) == "" {
+		appID = strings.TrimSpace(flags.AccountID)
+	}
+	if strings.TrimSpace(appSecret) == "" {
+		appSecret = strings.TrimSpace(flags.AppSecret)
+	}
+
+	if strings.TrimSpace(appID) == "" {
+		return fmt.Errorf("feishu app id not found")
+	}
+	if strings.TrimSpace(appSecret) == "" {
+		return fmt.Errorf("feishu app secret not found")
+	}
+
+	notify.SetRootDir(flags.RootDir)
+	storePath := notify.BindingsPath(flags.RootDir)
+	s, err := notify.NewStore(storePath)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %v", err)
+	}
+
+	bindings := s.ListBindings()
+	var targetBinding notify.BindingRecord
+	for _, b := range bindings {
+		if b.Channel == "feishu" && b.Status == notify.BindingStatusBound {
+			targetBinding = b
+			break
+		}
+	}
+
+	if targetBinding.ID == "" {
+		return fmt.Errorf("no active Feishu binding found")
+	}
+
+	message := strings.TrimSpace(flags.Message)
+	if message == "" {
+		message = "✅ OpenClaw Guard Feishu 测试消息：连接正常。"
+	}
+
+	success, errMsg := notify.SendFeishuMessage(appID, appSecret, targetBinding.SenderID, message)
+	if !success {
+		_ = s.UpdateBindingTestResult("feishu", targetBinding.AccountID, targetBinding.SenderID, errMsg, "failed")
+		return fmt.Errorf("failed to send feishu test message: %s", errMsg)
+	}
+
+	_ = s.UpdateBindingTestResult("feishu", targetBinding.AccountID, targetBinding.SenderID, "连接成功", "ok")
+
+	fmt.Println("Feishu test message sent successfully")
+	fmt.Printf("accountId: %s\n", targetBinding.AccountID)
+	fmt.Printf("senderId: %s\n", targetBinding.SenderID)
+	fmt.Printf("displayName: %s\n", targetBinding.DisplayName)
+	return nil
+}
+
+// runSaveWecomCredentials 保存企业微信凭证到 credentials store
+func runSaveWecomCredentials(args []string) error {
+	flags, fs := parseBindingFlags("save-wecom-credentials")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+	if strings.TrimSpace(flags.BotID) == "" {
+		return fmt.Errorf("--bot-id is required")
+	}
+	if strings.TrimSpace(flags.Secret) == "" {
+		return fmt.Errorf("--secret is required")
+	}
+
+	if err := notify.VerifyWecomCredentials(flags.BotID, flags.Secret); err != nil {
+		return err
+	}
+
+	notify.InitCredentialsStore(flags.RootDir)
+
+	store, err := notify.NewCredentialsStore(notify.CredentialsPath(flags.RootDir))
+	if err != nil {
+		return fmt.Errorf("failed to open credentials store: %v", err)
+	}
+
+	if err := store.SetWecomCredentials(flags.BotID, flags.Secret); err != nil {
+		return fmt.Errorf("failed to save wecom credentials: %v", err)
+	}
+
+	fmt.Println("WeCom credentials saved successfully")
+	fmt.Printf("botId: %s\n", flags.BotID)
+	return nil
+}
+
+// runTestWecomConnection 测试企业微信 bridge 是否可启动
+func runTestWecomConnection(args []string) error {
+	flags, fs := parseBindingFlags("test-wecom-connection")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+
+	notify.InitCredentialsStore(flags.RootDir)
+
+	botID, secret := notify.GetWecomCredentials()
+	if strings.TrimSpace(botID) == "" {
+		botID = strings.TrimSpace(flags.BotID)
+	}
+	if strings.TrimSpace(secret) == "" {
+		secret = strings.TrimSpace(flags.Secret)
+	}
+
+	if strings.TrimSpace(botID) == "" {
+		return fmt.Errorf("wecom bot id not found")
+	}
+	if strings.TrimSpace(secret) == "" {
+		return fmt.Errorf("wecom secret not found")
+	}
+
+	if err := notify.EnsureWecomBridge(botID, secret); err != nil {
+		return err
+	}
+
+	fmt.Println("wecom bridge ready")
+	fmt.Printf("botId: %s\n", botID)
+	return nil
+}
+
+// runCompleteWecomBinding 完成企业微信绑定
+func runCompleteWecomBinding(args []string) error {
+	flags, fs := parseBindingFlags("complete-wecom-binding")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+	if strings.TrimSpace(flags.AccountID) == "" {
+		return fmt.Errorf("--account-id is required")
+	}
+	if strings.TrimSpace(flags.SenderID) == "" {
+		return fmt.Errorf("--sender-id is required")
+	}
+	if strings.TrimSpace(flags.Code) == "" {
+		return fmt.Errorf("--code is required")
+	}
+
+	logger, err := logging.New(flags.LogFile)
+	if err != nil {
+		return err
+	}
+	defer logger.Close()
+
+	notify.SetRootDir(flags.RootDir)
+	storePath := notify.BindingsPath(flags.RootDir)
+	s, err := notify.NewStore(storePath)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %v", err)
+	}
+
+	pending, found := s.FindPendingByCode("wecom", flags.AccountID, flags.Code)
+	if !found {
+		return fmt.Errorf("pairing code not found or expired")
+	}
+	if pending.SenderID != flags.SenderID {
+		return fmt.Errorf("senderID mismatch")
+	}
+
+	record, err := s.MarkBound(
+		"wecom",
+		flags.AccountID,
+		flags.SenderID,
+		flags.DisplayName,
+		flags.Code,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to mark bound: %v", err)
+	}
+
+	notify.InitCredentialsStore(flags.RootDir)
+	botID, secret := notify.GetWecomCredentials()
+	if strings.TrimSpace(botID) == "" {
+		botID = strings.TrimSpace(flags.AccountID)
+	}
+	if strings.TrimSpace(secret) == "" {
+		secret = strings.TrimSpace(flags.Secret)
+	}
+
+	confirmationStatus := "unknown"
+	if strings.TrimSpace(botID) == "" || strings.TrimSpace(secret) == "" {
+		confirmationStatus = "failed"
+		fmt.Printf("binding completed, but wecom credentials not found for confirmation\n")
+		_ = s.UpdateBindingTestResult("wecom", flags.AccountID, flags.SenderID, "wecom credentials not found", "failed")
+	} else {
+		success, errMsg := notify.SendWecomMessage(
+			botID,
+			secret,
+			flags.SenderID,
+			"🔔 OpenClaw Guard 绑定成功！您现在会收到来自 OpenClaw 的通知。",
+		)
+		if !success {
+			confirmationStatus = "failed"
+			fmt.Printf("binding completed, but confirmation message failed: %s\n", errMsg)
+			_ = s.UpdateBindingTestResult("wecom", flags.AccountID, flags.SenderID, errMsg, "failed")
+		} else {
+			confirmationStatus = "ok"
+			_ = s.UpdateBindingTestResult("wecom", flags.AccountID, flags.SenderID, "连接成功", "ok")
+		}
+	}
+
+	fmt.Printf("binding completed successfully\n")
+	fmt.Printf("id: %s\n", record.ID)
+	fmt.Printf("channel: %s\n", record.Channel)
+	fmt.Printf("accountId: %s\n", record.AccountID)
+	fmt.Printf("senderId: %s\n", record.SenderID)
+	fmt.Printf("displayName: %s\n", record.DisplayName)
+	fmt.Printf("pairingCode: %s\n", record.PairingCode)
+	fmt.Printf("status: %s\n", record.Status)
+	fmt.Printf("confirmationSent: %s\n", confirmationStatus)
+
+	return nil
+}
+
+// runUnbindWecom 解除企业微信绑定
+func runUnbindWecom(args []string) error {
+	flags, fs := parseBindingFlags("unbind-wecom")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+
+	notify.SetRootDir(flags.RootDir)
+	storePath := notify.BindingsPath(flags.RootDir)
+	s, err := notify.NewStore(storePath)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %v", err)
+	}
+
+	bindings := s.ListBindings()
+	var targetBinding notify.BindingRecord
+	for _, b := range bindings {
+		if b.Channel == "wecom" && b.Status == notify.BindingStatusBound {
+			targetBinding = b
+			break
+		}
+	}
+
+	if targetBinding.ID == "" {
+		return fmt.Errorf("no active WeCom binding found")
+	}
+
+	if err := s.RevokeBinding("wecom", targetBinding.AccountID, targetBinding.SenderID); err != nil {
+		return fmt.Errorf("failed to revoke binding: %v", err)
+	}
+
+	fmt.Println("WeCom binding revoked successfully")
+	fmt.Printf("id: %s\n", targetBinding.ID)
+	fmt.Printf("accountId: %s\n", targetBinding.AccountID)
+	fmt.Printf("senderId: %s\n", targetBinding.SenderID)
+
+	return nil
+}
+
+// runTestWecomMessage 发送企业微信测试消息
+func runTestWecomMessage(args []string) error {
+	flags, fs := parseBindingFlags("test-wecom-message")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if flags.RootDir == "" {
+		return fmt.Errorf("--root is required")
+	}
+
+	notify.InitCredentialsStore(flags.RootDir)
+	botID, secret := notify.GetWecomCredentials()
+
+	if strings.TrimSpace(botID) == "" {
+		botID = strings.TrimSpace(flags.AccountID)
+	}
+	if strings.TrimSpace(secret) == "" {
+		secret = strings.TrimSpace(flags.Secret)
+	}
+
+	if strings.TrimSpace(botID) == "" {
+		return fmt.Errorf("wecom bot id not found")
+	}
+	if strings.TrimSpace(secret) == "" {
+		return fmt.Errorf("wecom secret not found")
+	}
+
+	notify.SetRootDir(flags.RootDir)
+	storePath := notify.BindingsPath(flags.RootDir)
+	s, err := notify.NewStore(storePath)
+	if err != nil {
+		return fmt.Errorf("failed to open store: %v", err)
+	}
+
+	bindings := s.ListBindings()
+	var targetBinding notify.BindingRecord
+	for _, b := range bindings {
+		if b.Channel == "wecom" && b.Status == notify.BindingStatusBound {
+			targetBinding = b
+			break
+		}
+	}
+
+	if targetBinding.ID == "" {
+		return fmt.Errorf("no active WeCom binding found")
+	}
+
+	message := strings.TrimSpace(flags.Message)
+	if message == "" {
+		message = "✅ OpenClaw Guard 企业微信测试消息：连接正常。"
+	}
+
+	success, errMsg := notify.SendWecomMessage(botID, secret, targetBinding.SenderID, message)
+	if !success {
+		_ = s.UpdateBindingTestResult("wecom", targetBinding.AccountID, targetBinding.SenderID, errMsg, "failed")
+		return fmt.Errorf("failed to send wecom test message: %s", errMsg)
+	}
+
+	_ = s.UpdateBindingTestResult("wecom", targetBinding.AccountID, targetBinding.SenderID, "连接成功", "ok")
+
+	fmt.Println("WeCom test message sent successfully")
+	fmt.Printf("accountId: %s\n", targetBinding.AccountID)
+	fmt.Printf("senderId: %s\n", targetBinding.SenderID)
+	fmt.Printf("displayName: %s\n", targetBinding.DisplayName)
+	return nil
+}

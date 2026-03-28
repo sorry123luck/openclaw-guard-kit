@@ -2,9 +2,12 @@ package watch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"openclaw-guard-kit/backup"
@@ -26,6 +29,9 @@ type Service struct {
 	dispatcher     EventDispatcher
 	backupSvc      *backup.Service
 	leaseInspector LeaseInspector
+}
+type startupProtectFile struct {
+	Until time.Time `json:"until"`
 }
 
 func NewService(
@@ -50,7 +56,77 @@ func NewService(
 func (s *Service) SetLeaseInspector(inspector LeaseInspector) {
 	s.leaseInspector = inspector
 }
+func monitoringPauseFile(cfg config.AppConfig) string {
+	return filepath.Join(filepath.Dir(cfg.StateFile), "monitor.paused")
+}
 
+func isMonitoringPaused(cfg config.AppConfig) bool {
+	_, err := os.Stat(monitoringPauseFile(cfg))
+	return err == nil
+}
+func startupProtectFilePath(cfg config.AppConfig) string {
+	return filepath.Join(filepath.Dir(cfg.StateFile), "startup-protect.json")
+}
+
+func loadStartupProtectionUntil(cfg config.AppConfig) time.Time {
+	raw, err := os.ReadFile(startupProtectFilePath(cfg))
+	if err != nil {
+		return time.Time{}
+	}
+
+	var payload startupProtectFile
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return time.Time{}
+	}
+	return payload.Until.UTC()
+}
+func candidateTargetSet(manifest backup.Manifest) map[string]struct{} {
+	targets := make(map[string]struct{})
+
+	for _, snapshot := range manifest.CandidateTargets {
+		if snapshot.State == backup.SnapshotStateBad {
+			continue
+		}
+
+		if key := strings.TrimSpace(snapshot.TargetKey); key != "" {
+			targets[key] = struct{}{}
+		}
+		if name := strings.TrimSpace(snapshot.Name); name != "" {
+			targets[name] = struct{}{}
+		}
+	}
+
+	return targets
+}
+
+func snapshotMatchesCandidate(snapshot backup.Snapshot, candidateTargets map[string]struct{}) bool {
+	if len(candidateTargets) == 0 {
+		return false
+	}
+
+	if key := strings.TrimSpace(snapshot.TargetKey); key != "" {
+		if _, ok := candidateTargets[key]; ok {
+			return true
+		}
+	}
+
+	if name := strings.TrimSpace(snapshot.Name); name != "" {
+		if _, ok := candidateTargets[name]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+func startupRestoreSuppressed(until time.Time, snapshot backup.Snapshot) bool {
+	if until.IsZero() {
+		return false
+	}
+	if !time.Now().UTC().Before(until) {
+		return false
+	}
+	return isOpenClawSnapshot(snapshot)
+}
 func (s *Service) Run(ctx context.Context, cfg config.AppConfig) error {
 	if s.backupSvc == nil {
 		return errors.New("backup service is nil")
@@ -81,7 +157,7 @@ func (s *Service) Run(ctx context.Context, cfg config.AppConfig) error {
 		Data: map[string]string{
 			"agentId":         cfg.AgentID,
 			"intervalSeconds": fmt.Sprintf("%d", cfg.PollIntervalSeconds),
-			"targets":         fmt.Sprintf("%d", len(manifest.Targets)),
+			"targets":         fmt.Sprintf("%d", len(manifest.TrustedTargets)),
 			"stateFile":       cfg.StateFile,
 		},
 	}
@@ -122,15 +198,53 @@ func (s *Service) Run(ctx context.Context, cfg config.AppConfig) error {
 }
 
 func (s *Service) scanOnce(ctx context.Context, cfg config.AppConfig) error {
+	if isMonitoringPaused(cfg) {
+		return nil
+	}
+
 	manifest, err := backup.LoadManifest(cfg.StateFile)
 	if err != nil {
 		return err
 	}
 
-	for _, snapshot := range manifest.Targets {
+	candidateTargets := candidateTargetSet(manifest)
+	startupProtectUntil := loadStartupProtectionUntil(cfg)
+
+	for _, snapshot := range manifest.TrustedTargets {
 		effectiveAgentID := snapshot.AgentID
 		if effectiveAgentID == "" {
 			effectiveAgentID = cfg.AgentID
+		}
+
+		if snapshotMatchesCandidate(snapshot, candidateTargets) {
+			if s.logger != nil {
+				s.logger.Info(
+					"restore deferred due to candidate snapshot",
+					"agent", effectiveAgentID,
+					"target", snapshot.Name,
+					"targetKey", snapshot.TargetKey,
+					"kind", snapshot.Kind,
+					"path", snapshot.SourcePath,
+					"message", "candidate exists for target, drift restore temporarily deferred",
+				)
+			}
+			continue
+		}
+
+		if startupRestoreSuppressed(startupProtectUntil, snapshot) {
+			if s.logger != nil {
+				s.logger.Info(
+					"restore deferred due to startup protection window",
+					"agent", effectiveAgentID,
+					"target", snapshot.Name,
+					"targetKey", snapshot.TargetKey,
+					"kind", snapshot.Kind,
+					"path", snapshot.SourcePath,
+					"until", startupProtectUntil.Format(time.RFC3339),
+					"message", "OpenClaw startup protection window active, restore temporarily deferred",
+				)
+			}
+			continue
 		}
 
 		drift, reason, err := compareToBaseline(snapshot)
@@ -257,6 +371,42 @@ func (s *Service) hasActiveLease(snapshot backup.Snapshot, agentID string) bool 
 }
 
 func compareToBaseline(snapshot backup.Snapshot) (bool, string, error) {
+	switch {
+	case isAuthProfilesSnapshot(snapshot):
+		return compareAuthProfilesToBaseline(snapshot)
+	case isOpenClawSnapshot(snapshot):
+		return compareOpenClawToBaseline(snapshot)
+	default:
+		return compareFileFingerprintToBaseline(snapshot)
+	}
+}
+
+func isAuthProfilesSnapshot(snapshot backup.Snapshot) bool {
+	kind := strings.TrimSpace(snapshot.Kind)
+	targetKey := strings.TrimSpace(snapshot.TargetKey)
+	name := strings.TrimSpace(snapshot.Name)
+	base := filepath.Base(strings.TrimSpace(snapshot.SourcePath))
+
+	return strings.EqualFold(kind, protocol.KindAuthProfile) ||
+		strings.EqualFold(targetKey, "auth") ||
+		strings.HasPrefix(strings.ToLower(targetKey), "auth:") ||
+		strings.EqualFold(name, protocol.TargetAuthProfile) ||
+		strings.EqualFold(base, "auth-profiles.json")
+}
+
+func isOpenClawSnapshot(snapshot backup.Snapshot) bool {
+	kind := strings.TrimSpace(snapshot.Kind)
+	targetKey := strings.TrimSpace(snapshot.TargetKey)
+	name := strings.TrimSpace(snapshot.Name)
+	base := filepath.Base(strings.TrimSpace(snapshot.SourcePath))
+
+	return strings.EqualFold(kind, protocol.KindOpenClaw) ||
+		strings.EqualFold(targetKey, protocol.TargetOpenClaw) ||
+		strings.EqualFold(name, protocol.TargetOpenClaw) ||
+		strings.EqualFold(base, "openclaw.json")
+}
+
+func compareFileFingerprintToBaseline(snapshot backup.Snapshot) (bool, string, error) {
 	sha, size, _, _, err := backup.Fingerprint(snapshot.SourcePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -272,6 +422,161 @@ func compareToBaseline(snapshot backup.Snapshot) (bool, string, error) {
 	return false, "", nil
 }
 
+func compareOpenClawToBaseline(snapshot backup.Snapshot) (bool, string, error) {
+	currentRaw, err := os.ReadFile(snapshot.SourcePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, "deleted", nil
+		}
+		return false, "", err
+	}
+
+	baselineRaw, err := os.ReadFile(snapshot.BackupPath)
+	if err != nil {
+		return false, "", err
+	}
+
+	currentProtected, err := normalizeOpenClawProtectedBytes(currentRaw)
+	if err != nil {
+		return true, "protected openclaw content changed", nil
+	}
+
+	baselineProtected, err := normalizeOpenClawProtectedBytes(baselineRaw)
+	if err != nil {
+		return false, "", fmt.Errorf("normalize openclaw baseline failed: %w", err)
+	}
+
+	if string(currentProtected) != string(baselineProtected) {
+		return true, "protected openclaw content changed", nil
+	}
+
+	return false, "", nil
+}
+
+func compareAuthProfilesToBaseline(snapshot backup.Snapshot) (bool, string, error) {
+	currentRaw, err := os.ReadFile(snapshot.SourcePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, "deleted", nil
+		}
+		return false, "", err
+	}
+
+	baselineRaw, err := os.ReadFile(snapshot.BackupPath)
+	if err != nil {
+		return false, "", err
+	}
+
+	currentProtected, err := normalizeAuthProfilesProtectedBytes(currentRaw)
+	if err != nil {
+		// 当前文件如果已经坏掉/格式异常，也应该视为受保护内容变化
+		return true, "protected auth content changed", nil
+	}
+
+	baselineProtected, err := normalizeAuthProfilesProtectedBytes(baselineRaw)
+	if err != nil {
+		return false, "", fmt.Errorf("normalize auth baseline failed: %w", err)
+	}
+
+	if string(currentProtected) != string(baselineProtected) {
+		return true, "protected auth content changed", nil
+	}
+
+	return false, "", nil
+}
+
+func normalizeAuthProfilesProtectedBytes(raw []byte) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+
+	protected := map[string]any{}
+
+	if v, ok := doc["version"]; ok {
+		protected["version"] = v
+	}
+	if v, ok := doc["profiles"]; ok {
+		protected["profiles"] = v
+	}
+
+	return json.Marshal(protected)
+}
+func normalizeOpenClawProtectedBytes(raw []byte) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+
+	// 1. wizard 整块忽略
+	delete(doc, "wizard")
+
+	// 2. meta.lastTouchedAt / lastTouchedVersion 忽略
+	if metaAny, ok := doc["meta"]; ok {
+		if meta, ok := metaAny.(map[string]any); ok {
+			delete(meta, "lastTouchedAt")
+			delete(meta, "lastTouchedVersion")
+			if len(meta) == 0 {
+				delete(doc, "meta")
+			} else {
+				doc["meta"] = meta
+			}
+		}
+	}
+
+	// 3. 根级 installs.*.resolvedAt / installedAt 忽略
+	if installsAny, ok := doc["installs"]; ok {
+		if installs, ok := installsAny.(map[string]any); ok {
+			stripInstallTimestampFields(installs)
+			if len(installs) == 0 {
+				delete(doc, "installs")
+			} else {
+				doc["installs"] = installs
+			}
+		}
+	}
+
+	// 4. plugins.installs.*.resolvedAt / installedAt 忽略
+	if pluginsAny, ok := doc["plugins"]; ok {
+		if plugins, ok := pluginsAny.(map[string]any); ok {
+			if installsAny, ok := plugins["installs"]; ok {
+				if installs, ok := installsAny.(map[string]any); ok {
+					stripInstallTimestampFields(installs)
+					if len(installs) == 0 {
+						delete(plugins, "installs")
+					} else {
+						plugins["installs"] = installs
+					}
+				}
+			}
+			if len(plugins) == 0 {
+				delete(doc, "plugins")
+			} else {
+				doc["plugins"] = plugins
+			}
+		}
+	}
+
+	return json.Marshal(doc)
+}
+
+func stripInstallTimestampFields(installs map[string]any) {
+	for name, itemAny := range installs {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		delete(item, "resolvedAt")
+		delete(item, "installedAt")
+
+		if len(item) == 0 {
+			delete(installs, name)
+		} else {
+			installs[name] = item
+		}
+	}
+}
 func (s *Service) emit(ctx context.Context, cfg config.AppConfig, event protocol.Event) {
 	if event.AgentID == "" {
 		event.AgentID = cfg.AgentID

@@ -1,4 +1,10 @@
-﻿# Optional tool notes
+﻿## OpenClaw Guard Local Paths
 
-- Prefer guard.exe as the only allowed gateway lifecycle wrapper in guarded flows.
-- Avoid direct restart/start/stop commands when guard flow is required.
+- Guard install dir: `{{GUARD_INSTALL_DIR}}`
+- Guard exe: `{{GUARD_EXE}}`
+- Guard detector exe: `{{GUARD_DETECTOR_EXE}}`
+- Guard UI exe: `{{GUARD_UI_EXE}}`
+- OpenClaw root: `{{OPENCLAW_ROOT}}`
+- Workspace: `{{WORKSPACE_PATH}}`
+- Default agent: `{{DEFAULT_AGENT_ID}}`
+- Shared skill dir: `{{SHARED_SKILL_DIR}}`

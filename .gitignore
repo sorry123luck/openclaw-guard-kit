@@ -1,9 +1,35 @@
-﻿bin/
-obj/
-dist/
-build/
-*.log
+# Build outputs
+*.exe
+*.pdb
+*.dll
+*.so
+*.dylib
+
+# Test outputs
+*_result.txt
+tree.txt
+tmp-test/
+test-logs/
 *.tmp
-*.user
+*.backup
+*-test/
+
+# Local state (generated at runtime)
+.guard-state/
+test_guard_root/
+
+# Dependencies (use package-lock.json for reproducible installs)
+tools/wecom-bridge/node_modules/
+
+# IDE
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+*.user
+
+# Logs
+*.log
+
+# Backup files
+*.bak

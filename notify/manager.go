@@ -29,6 +29,10 @@ func NewManager(logger *logging.Logger, notifiers ...Notifier) *Manager {
 	}
 }
 
+func NewMultiNotifier(logger *logging.Logger, notifiers ...Notifier) *Manager {
+	return NewManager(logger, notifiers...)
+}
+
 func (m *Manager) Register(notifier Notifier) {
 	if m == nil || notifier == nil {
 		return
@@ -38,6 +42,18 @@ func (m *Manager) Register(notifier Notifier) {
 
 func (m *Manager) Notify(ctx context.Context, event protocol.Event) error {
 	if m == nil {
+		return nil
+	}
+
+	// 全局静默过滤：内部探活/状态查询事件，不允许进入任何通知渠道
+	if shouldSkipAllChannelDispatch(event.Type) {
+		if m.logger != nil {
+			m.logger.Debug(
+				"notify manager skipped quiet event",
+				"type", event.Type,
+				"target", event.Target,
+			)
+		}
 		return nil
 	}
 
@@ -90,4 +106,13 @@ func (m *Manager) Notify(ctx context.Context, event protocol.Event) error {
 	}
 
 	return nil
+}
+
+func shouldSkipAllChannelDispatch(eventType string) bool {
+	switch eventType {
+	case protocol.TypeGuardStatusRequest, protocol.TypeGuardStatusResponse:
+		return true
+	default:
+		return false
+	}
 }

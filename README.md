@@ -1,84 +1,104 @@
-# openclaw-guard-kit (v1 scaffold)
+# OpenClaw Guard Kit
 
-首轮落地：
+配置文件守护工具，为 OpenClaw 提供受保护的写入机制、配置文件备份恢复、以及独立的消息通知通道。
 
-- 语言：Go
-- 主程序：`cmd/guard`
-- 已落包：`internal/protocol + config + backup + gateway + process + watch + logging + notify`
-- 已实现子命令：`prepare` / `watch`
-- 首轮守护目标：
-  - 必选：`openclaw.json`
-  - 条件性：`auth-profiles.json`（存在时才纳入守护）
+## 核心功能
 
-## 行为说明
+### 1. 受保护的写入（Guarded Write）
 
-### `guard prepare`
+修改 OpenClaw 配置文件前必须申请临时租约（Lease），写入完成后确认或放弃。整个过程受 guard 监控，防止配置被意外或恶意修改导致系统故障。
 
-- 解析守护配置。
-- 校验 `openclaw.json` 是否存在。
-- 若 `auth-profiles.json` 存在，则一并纳入。
-- 将基线备份写入：`.guard/backup/*.baseline.json`
-- 生成状态清单：`.guard/manifest.json`
+### 2. 配置文件备份与恢复
 
-### `guard watch`
+自动记录配置文件的可信基线（Baseline），检测到文件被修改时可根据策略自动恢复或通知用户。
 
-- 读取 `.guard/manifest.json`
-- 若缺失且 `--auto-prepare=true`，自动建立首份基线
-- 轮询检测文件漂移：
-  - 文件被删除
-  - 文件内容被修改
-- 发现漂移后按配置恢复基线
+### 3. 独立消息通知
 
-## 目录结构
+即使 OpenClaw 主程序崩溃，guard 仍可通过 Telegram、飞书、企业微信独立向用户发送通知，确保关键信息不漏失。
 
-```text
-cmd/guard
-internal/protocol
-config
-backup
-gateway
-process
-watch
-logging
-notify
-examples
-```
+### 4. 进程守护
 
-## 默认路径
+guard-detector 监控 OpenClaw 运行状态，在线时确保 guard 正常运作，离线时执行对应策略。
 
-若只给 `--root C:\OpenClaw`：
+## 系统要求
 
-- `openclaw.json` → `C:\OpenClaw\openclaw.json`
-- `auth-profiles.json` → `C:\OpenClaw\auth-profiles.json`
-- 备份目录 → `C:\OpenClaw\.guard\backup`
-- 状态文件 → `C:\OpenClaw\.guard\manifest.json`
+- Windows 操作系统
+- OpenClaw 已安装并正常运行
+- Go 1.21+（如需从源码编译）
 
-## 用法
+## 安装
+
+### 一键安装（推荐）
 
 ```powershell
-guard prepare --root C:\OpenClaw
-guard watch --root C:\OpenClaw --interval 2
+git clone https://github.com/sorry123luck/openclaw-guard-kit.git
+cd openclaw-guard-kit
+.\installer\install.ps1
 ```
 
-或者：
+安装过程会自动：
+1. 编译 Go 程序（如无可用二进制）
+2. 创建安装目录
+3. 安装共享技能到 OpenClaw
+4. 配置自启动
+
+### 手动安装
+
+1. 下载本仓库
+2. 运行 `guard prepare --root <OPENCLAW_ROOT>` 初始化基线
+3. 运行 `guard watch --root <OPENCLAW_ROOT>` 启动守护
+
+## 快速开始
+
+### 1. 初始化
 
 ```powershell
-guard watch --config .\examples\guard.example.json
+guard prepare --root C:\Users\Administrator\.openclaw
 ```
 
-## 当前边界（v1）
+### 2. 启动守护
 
-当前版本故意先做稳：
+```powershell
+guard watch --root C:\Users\Administrator\.openclaw --interval 2
+```
 
-- 使用轮询，不依赖 `fsnotify`
-- `gateway/process/notify` 先保留为可扩展接口与 noop/log 实现
-- 只恢复到 `prepare` 阶段形成的静态基线
-- 暂未加入 Windows Service、系统托盘、远程上报、热更新基线
+### 3. 配置通知通道（可选）
 
-## 下一轮建议
+**Telegram：**
+```powershell
+guard save-telegram-credentials --root ~/.openclaw --token "YOUR_BOT_TOKEN"
+guard complete-telegram-binding --root ~/.openclaw --account-id "BOT_ID" --sender-id "YOUR_CHAT_ID" --display-name "My Guard" --code "PAIRING_CODE"
+```
 
-1. 增加 `repair` / `status` 子命令
-2. 接入 `fsnotify` + 轮询双保险
-3. 增加签名校验/白名单写入窗口
-4. 将 `gateway` 接到真实 IPC 或本地 socket
-5. 将 `process` 接到 OpenClaw 主进程联动
+**飞书：**
+```powershell
+guard save-feishu-credentials --root ~/.openclaw --account-id "APP_ID" --app-secret "APP_SECRET"
+guard complete-feishu-binding --root ~/.openclaw --account-id "APP_ID" --sender-id "OPEN_ID" --display-name "My Guard" --code "PAIRING_CODE"
+```
+
+**企业微信：**
+```powershell
+guard save-wecom-credentials --root ~/.openclaw --bot-id "BOT_ID" --secret "SECRET"
+guard complete-wecom-binding --root ~/.openclaw --account-id "BOT_ID" --sender-id "USER_ID" --display-name "My Guard" --code "PAIRING_CODE"
+```
+
+## 命令参考
+
+详见 [COMMANDS.md](COMMANDS.md)
+
+## 工作流程
+
+```
+用户修改配置 → guard request-write 申请租约 → guard 记录当前状态 → 用户执行写入 → guard complete-write 确认写入 → 文件稳定后更新基线
+```
+
+## 架构
+
+- `guard` — 核心守护进程，处理受保护的写入请求
+- `guard-detector` — OpenClaw 状态探测器，负责自动启停 guard
+- `guard-ui` — 轻量控制面板
+- `tools/wecom-bridge` — 企业微信通知桥接
+
+## 许可证
+
+MIT License

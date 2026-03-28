@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"openclaw-guard-kit/internal/guard"
 )
 
 const (
@@ -15,19 +18,20 @@ const (
 	BindingStatusBound   = "bound"
 	BindingStatusRevoked = "revoked"
 
-	ConnectionStatusUnknown = "unknown"
-	ConnectionStatusOK      = "ok"
-	ConnectionStatusFailed  = "failed"
+	ConnectionStatusUnknown  = "unknown"
+	ConnectionStatusOK       = "ok"
+	ConnectionStatusFailed   = "failed"
+	defaultPendingBindingTTL = 3 * time.Minute
 )
 
 type BindingRecord struct {
 	ID               string    `json:"id"`
 	Channel          string    `json:"channel"`
-	AccountID        string    `json:"accountId"`
-	SenderID         string    `json:"senderId"`
-	DisplayName      string    `json:"displayName,omitempty"`
-	PairingCode      string    `json:"pairingCode,omitempty"`
-	Status           string    `json:"status"`
+	AccountID        string    `json:"accountId"`             // 非敏感账号标识：Telegram=bot_id, 飞书=appId, 企业微信=corpId|agentId
+	SenderID         string    `json:"senderId"`              // 消息来源ID：Telegram=chat_id, 飞书=open_id, 企业微信=user_id
+	DisplayName      string    `json:"displayName,omitempty"` // 被绑定对象的显示名（用户侧）
+	PairingCode      string    `json:"pairingCode,omitempty"` // 配对码
+	Status           string    `json:"status"`                // pending | bound | revoked
 	BoundAt          time.Time `json:"boundAt,omitempty"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
@@ -54,9 +58,15 @@ type StoreData struct {
 }
 
 type Store struct {
-	mu   sync.Mutex
-	path string
-	data StoreData
+	mu          sync.Mutex
+	path        string
+	data        StoreData
+	guardClient *guard.Client
+}
+
+// SetGuardClient sets the guard client for guarded writes.
+func (s *Store) SetGuardClient(gc *guard.Client) {
+	s.guardClient = gc
 }
 
 func NewStore(path string) (*Store, error) {
@@ -153,7 +163,7 @@ func (s *Store) UpsertPending(p PendingBinding) error {
 		p.CreatedAt = now
 	}
 	if p.ExpiresAt.IsZero() {
-		p.ExpiresAt = now.Add(1 * time.Hour)
+		p.ExpiresAt = now.Add(defaultPendingBindingTTL)
 	}
 
 	replaced := false
@@ -337,27 +347,11 @@ func (s *Store) saveLocked() error {
 		return err
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".notify-store-*")
-	if err != nil {
-		return err
+	// 如果有 guardClient，通过受保护写入；否则直接写入文件（用于 CLI 绑定场景）
+	if s.guardClient != nil {
+		return s.guardClient.WriteFile(context.Background(), s.path, raw)
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	_ = os.Remove(s.path)
-	return os.Rename(tmpName, s.path)
+	return os.WriteFile(s.path, raw, 0o644)
 }
 
 func buildBindingID(channel, accountID, senderID string) string {

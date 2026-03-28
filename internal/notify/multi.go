@@ -41,6 +41,17 @@ func (m *MultiNotifier) Add(n Notifier) {
 }
 
 func (m *MultiNotifier) Notify(ctx context.Context, event protocol.Event) error {
+	if shouldSkipAllChannelDispatch(event.Type) {
+		if m.logger != nil {
+			m.logger.Debug(
+				"notifier skipped quiet event",
+				"type", event.Type,
+				"target", event.Target,
+			)
+		}
+		return nil
+	}
+
 	m.mu.RLock()
 	items := make([]Notifier, 0, len(m.notifiers))
 	items = append(items, m.notifiers...)
@@ -64,4 +75,24 @@ func (m *MultiNotifier) Notify(ctx context.Context, event protocol.Event) error 
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func shouldSkipAllChannelDispatch(eventType string) bool {
+	switch eventType {
+	case protocol.TypeGuardStatusRequest,
+		protocol.TypeGuardStatusResponse,
+		protocol.TypeGuardStopRequest,
+		protocol.TypeGuardStopResponse,
+		protocol.EventWatchStarted,
+		protocol.EventWatchStopped,
+		protocol.EventServiceStarting,
+		protocol.EventServiceStarted,
+		protocol.EventServiceStopping,
+		protocol.EventServiceStopped,
+		protocol.EventGuardCoordinatorStarted,
+		protocol.EventGuardCoordinatorStopped:
+		return true
+	default:
+		return false
+	}
 }

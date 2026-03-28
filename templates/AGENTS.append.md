@@ -1,6 +1,14 @@
-﻿# Guard workflow rules for AGENTS.md
+﻿## OpenClaw Guard Rules
 
-- Before modifying openclaw.json, the agent must start guard.exe.
-- Before modifying uth-profiles.json in auth-related tasks, the agent must start guard.exe.
-- The agent must not directly execute OpenClaw gateway restart/start/stop when guard flow is required.
-- During guard window, the user should be told not to continue issuing instructions until the guard flow finishes.
+Protected files:
+
+- `~/.openclaw/openclaw.json`
+- `~/.openclaw/agents/<agentId>/agent/auth-profiles.json`
+- `~/.openclaw/agents/<agentId>/agent/models.json`
+
+Rules:
+
+1. If the task can be reduced to writing final content into one known protected file, use `guard.exe guarded-write`.
+2. Use `guard.exe openclaw-op` only when the task must invoke an OpenClaw control-plane write operation itself.
+3. Never use pause-monitoring, resume-monitoring, restart, start, or stop as the normal path for protected config edits.
+4. If guard rejects, validation fails, or guard returns rollback / self-heal / candidate results, stop and treat guard as authoritative.
