@@ -1,105 +1,104 @@
 # OpenClaw Guard Kit
 
-以下内容均由本人的claw大笨蛋全权写入，写的真好😎
-配置文件守护工具，为 OpenClaw 提供受保护的写入机制、配置文件备份恢复、以及独立的消息通知通道。
+面向 Windows 的 OpenClaw 守护与恢复工具集。
 
-## 核心功能
+## 核心能力
 
-### 1. 受保护的写入（Guarded Write）
+- 对关键配置文件进行**受保护写入**
+- 为关键配置建立**基线备份**与恢复能力
+- 通过 detector 管理 guard **生命周期**
+- 支持 **Telegram、飞书、企业微信** 等通知通道
+- 提供轻量级 **Windows 托盘 / 控制面板**
 
-修改 OpenClaw 配置文件前必须申请临时租约（Lease），写入完成后确认或放弃。整个过程受 guard 监控，防止配置被意外或恶意修改导致系统故障。
+## 主要组件
 
-### 2. 配置文件备份与恢复
-
-自动记录配置文件的可信基线（Baseline），检测到文件被修改时可根据策略自动恢复或通知用户。
-
-### 3. 独立消息通知
-
-即使 OpenClaw 主程序崩溃，guard 仍可通过 Telegram、飞书、企业微信独立向用户发送通知，确保关键信息不漏失。
-
-### 4. 进程守护
-
-guard-detector 监控 OpenClaw 运行状态，在线时确保 guard 正常运作，离线时执行对应策略。
+| 组件 | 说明 |
+|------|------|
+| `guard` | 核心守护进程，负责 lease、受保护写入、基线刷新、漂移恢复 |
+| `guard-detector` | 检测 OpenClaw 运行状态，并管理 guard 生命周期 |
+| `guard-ui` | 轻量级 Windows 控制面板 / 托盘程序 |
+| `tools/wecom-bridge` | 企业微信桥接辅助工具 |
+| `skills/openclaw-guard-kit` | 安装到 OpenClaw 的共享技能 |
 
 ## 系统要求
 
-- Windows 操作系统
-- OpenClaw 已安装并正常运行
-- Go 1.21+（如需从源码编译）
+- Windows
+- 已正确安装并可运行的 OpenClaw
+- PowerShell 5.1 或更高版本
+- 能访问 GitHub Releases
+- Go 仅在本地源码开发和发布打包时需要
 
 ## 安装
 
-### 一键安装（推荐）
+### 推荐方式：基于 Release 的安装
 
 ```powershell
-git clone https://github.com/sorry123luck/openclaw-guard-kit.git
-cd openclaw-guard-kit
-.\installer\install.ps1
+powershell -ExecutionPolicy Bypass -File .\installer\install.ps1
 ```
 
-安装过程会自动：
-1. 编译 Go 程序（如无可用二进制）
-2. 创建安装目录
-3. 安装共享技能到 OpenClaw
-4. 配置自启动
+**默认流程：**
 
-### 手动安装
+1. 从 GitHub Releases 下载最新发布包
+2. 解压到临时目录
+3. 调用 `installer/install-package.ps1`
+4. 安装程序文件到本地安装目录
+5. 安装共享技能到 OpenClaw
+6. 更新 workspace 规则
+7. 注册并启动 guard-detector
 
-1. 下载本仓库
-2. 运行 `guard prepare --root <OPENCLAW_ROOT>` 初始化基线
-3. 运行 `guard watch --root <OPENCLAW_ROOT>` 启动守护
+**默认安装目录：** `%USERPROFILE%\.openclaw-guard-kit`
 
-## 快速开始
-
-### 1. 初始化
+### 自定义安装目录
 
 ```powershell
-guard prepare --root C:\Users\Administrator\.openclaw
+powershell -ExecutionPolicy Bypass -File .\installer\install.ps1 `
+  -InstallDir "$env:USERPROFILE\.openclaw-guard-kit-test" `
+  -OpenClawRoot "$env:USERPROFILE\.openclaw"
 ```
 
-### 2. 启动守护
+## 升级
+
+运行已安装目录中的升级脚本：
 
 ```powershell
-guard watch --root C:\Users\Administrator\.openclaw --interval 2
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\installer\update.ps1"
 ```
 
-### 3. 配置通知通道（可选）
+**默认流程：**
 
-**Telegram：**
+1. 从 GitHub Releases 下载最新发布包
+2. 解压到临时目录
+3. 调用 `installer/update-from-dir.ps1`
+4. 刷新安装目录中的资源
+5. 刷新共享技能与 workspace 规则
+6. 重启 detector
+
+## 本地开发
+
+本地源码开发时可执行：
+
 ```powershell
-guard save-telegram-credentials --root ~/.openclaw --token "YOUR_BOT_TOKEN"
-guard complete-telegram-binding --root ~/.openclaw --account-id "BOT_ID" --sender-id "YOUR_CHAT_ID" --display-name "My Guard" --code "PAIRING_CODE"
+go build ./...
+powershell -ExecutionPolicy Bypass -File .\packaging\package.ps1 -Version v0.1.0-test
 ```
 
-**飞书：**
-```powershell
-guard save-feishu-credentials --root ~/.openclaw --account-id "APP_ID" --app-secret "APP_SECRET"
-guard complete-feishu-binding --root ~/.openclaw --account-id "APP_ID" --sender-id "OPEN_ID" --display-name "My Guard" --code "PAIRING_CODE"
-```
+打包脚本会生成用于 GitHub Releases 的发布 zip。
 
-**企业微信：**
-```powershell
-guard save-wecom-credentials --root ~/.openclaw --bot-id "BOT_ID" --secret "SECRET"
-guard complete-wecom-binding --root ~/.openclaw --account-id "BOT_ID" --sender-id "USER_ID" --display-name "My Guard" --code "PAIRING_CODE"
-```
-
-## 命令参考
-
-详见 [COMMANDS.md](COMMANDS.md)
-
-## 工作流程
+## 受保护写入流程
 
 ```
-用户修改配置 → guard request-write 申请租约 → guard 记录当前状态 → 用户执行写入 → guard complete-write 确认写入 → 文件稳定后更新基线
+request-write → lease granted → modify → complete-write / fail-write
 ```
 
-## 架构
+## 文档
 
-- `guard` — 核心守护进程，处理受保护的写入请求
-- `guard-detector` — OpenClaw 状态探测器，负责自动启停 guard
-- `guard-ui` — 轻量控制面板
-- `tools/wecom-bridge` — 企业微信通知桥接
+- [COMMANDS.md](COMMANDS.md)
+- [docs/install.md](docs/install.md)
+- [docs/update.md](docs/update.md)
+- [docs/uninstall.md](docs/uninstall.md)
+- [docs/troubleshoot.md](docs/troubleshoot.md)
+- [docs/releasing.md](docs/releasing.md)
 
 ## 许可证
 
-MIT License
+MIT

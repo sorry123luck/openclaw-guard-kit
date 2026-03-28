@@ -1,4 +1,3 @@
-@'
 # OS / Editor
 .DS_Store
 Thumbs.db
@@ -39,4 +38,3 @@ node_modules/
 # Misc
 *.tmp
 *.bak
-'@ | Set-Content -Encoding utf8 .gitignore
