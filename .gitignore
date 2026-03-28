@@ -1,0 +1,42 @@
+@'
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local audit / temp
+_repo_audit/
+tree.txt
+verification_result.txt
+guard_verification_result.txt
+*.log
+tmp/
+temp/
+coverage/
+
+# Build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+*.msi
+*.zip
+*.7z
+*.rar
+dist/
+build/
+release-build/
+bin/
+
+# Node
+node_modules/
+
+# Go test
+*.test
+*.out
+
+# Misc
+*.tmp
+*.bak
+'@ | Set-Content -Encoding utf8 .gitignore

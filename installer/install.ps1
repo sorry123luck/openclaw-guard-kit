@@ -1,0 +1,134 @@
+﻿param(
+  [string]$InstallDir = (Join-Path $env:USERPROFILE ".openclaw-guard-kit"),
+  [string]$OpenClawRoot = (Join-Path $env:USERPROFILE ".openclaw"),
+  [string]$RepoOwner = "sorry123luck",
+  [string]$RepoName = "openclaw-guard-kit",
+  [string]$AssetName = "openclaw-guard-kit-windows-x64.zip",
+  [switch]$ForceRebuild
+)
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+function Write-Step {
+  param(
+    [string]$English,
+    [string]$Chinese = ""
+  )
+  if ([string]::IsNullOrWhiteSpace($Chinese)) {
+    Write-Host $English
+    return
+  }
+  Write-Host "$English ($Chinese)"
+}
+
+function Ensure-Directory {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return
+  }
+  if (-not (Test-Path -LiteralPath $Path)) {
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+  }
+}
+
+function Get-TempWorkRoot {
+  $root = Join-Path $env:TEMP "openclaw-guard-kit-release-install"
+  Ensure-Directory $root
+  return $root
+}
+
+function Remove-IfExists {
+  param([string]$Path)
+  if (Test-Path -LiteralPath $Path) {
+    Remove-Item -LiteralPath $Path -Recurse -Force
+  }
+}
+
+function Get-LatestAssetUrl {
+  param(
+    [string]$Owner,
+    [string]$Name,
+    [string]$Asset
+  )
+  return "https://github.com/$Owner/$Name/releases/latest/download/$Asset"
+}
+
+function Expand-SingleRootIfPresent {
+  param([string]$ExtractedRoot)
+
+  $dirs = Get-ChildItem -LiteralPath $ExtractedRoot -Directory
+  $files = Get-ChildItem -LiteralPath $ExtractedRoot -File
+
+  if ($dirs.Count -eq 1 -and $files.Count -eq 0) {
+    return $dirs[0].FullName
+  }
+
+  return $ExtractedRoot
+}
+
+function Resolve-PackageRoot {
+  param([string]$ExtractedRoot)
+
+  $candidate = Expand-SingleRootIfPresent -ExtractedRoot $ExtractedRoot
+
+  $guardExe = Join-Path $candidate "guard.exe"
+  $installPackage = Join-Path $candidate "installer\install-package.ps1"
+
+  if ((Test-Path -LiteralPath $guardExe) -and (Test-Path -LiteralPath $installPackage)) {
+    return $candidate
+  }
+
+  throw "Release package root is invalid: $candidate"
+}
+
+Write-Step "Downloading latest release package..." "正在下载最新发布包"
+$workRoot = Get-TempWorkRoot
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$sessionRoot = Join-Path $workRoot $stamp
+$zipPath = Join-Path $sessionRoot $AssetName
+$extractRoot = Join-Path $sessionRoot "expanded"
+
+Ensure-Directory $sessionRoot
+Ensure-Directory $extractRoot
+
+$assetUrl = Get-LatestAssetUrl -Owner $RepoOwner -Name $RepoName -Asset $AssetName
+Write-Host "URL: $assetUrl"
+
+try {
+  Invoke-WebRequest -Uri $assetUrl -OutFile $zipPath -UseBasicParsing
+} catch {
+  throw "Failed to download latest release asset: $assetUrl`n$($_.Exception.Message)"
+}
+
+if (-not (Test-Path -LiteralPath $zipPath)) {
+  throw "Downloaded asset not found: $zipPath"
+}
+
+Write-Step "Extracting release package..." "正在解压发布包"
+Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
+
+$packageRoot = Resolve-PackageRoot -ExtractedRoot $extractRoot
+$installScript = Join-Path $packageRoot "installer\install-package.ps1"
+
+Write-Step "Running package installer..." "正在执行安装脚本"
+
+$installArgs = @(
+  "-ExecutionPolicy", "Bypass",
+  "-File", $installScript,
+  "-ProjectDir", $packageRoot,
+  "-InstallDir", $InstallDir,
+  "-OpenClawRoot", $OpenClawRoot
+)
+
+if ($ForceRebuild) {
+  $installArgs += "-ForceRebuild"
+}
+
+& powershell @installArgs
+
+if ($LASTEXITCODE -ne 0) {
+  throw "install-package.ps1 failed with exit code $LASTEXITCODE"
+}
+
+Write-Step "Install completed." "安装完成"
