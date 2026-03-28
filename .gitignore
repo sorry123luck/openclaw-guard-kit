@@ -1,35 +1,42 @@
+@'
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local audit / temp
+_repo_audit/
+tree.txt
+verification_result.txt
+guard_verification_result.txt
+*.log
+tmp/
+temp/
+coverage/
+
 # Build outputs
 *.exe
-*.pdb
 *.dll
 *.so
 *.dylib
+*.msi
+*.zip
+*.7z
+*.rar
+dist/
+build/
+release-build/
+bin/
 
-# Test outputs
-*_result.txt
-tree.txt
-tmp-test/
-test-logs/
+# Node
+node_modules/
+
+# Go test
+*.test
+*.out
+
+# Misc
 *.tmp
-*.backup
-*-test/
-
-# Local state (generated at runtime)
-.guard-state/
-test_guard_root/
-
-# Dependencies (use package-lock.json for reproducible installs)
-tools/wecom-bridge/node_modules/
-
-# IDE
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.user
-
-# Logs
-*.log
-
-# Backup files
 *.bak
+'@ | Set-Content -Encoding utf8 .gitignore
