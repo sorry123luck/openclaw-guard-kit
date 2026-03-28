@@ -590,11 +590,19 @@ func (d *Detector) handleOffline(ctx context.Context) {
 	}
 
 	elapsed := time.Since(d.transitionSince)
-	if elapsed >= time.Duration(d.offlineGraceSeconds())*time.Second {
+	offlineGrace := time.Duration(d.offlineGraceSeconds()) * time.Second
+	offlineStopDelay := time.Duration(d.offlineStopDelaySeconds()) * time.Second
+
+	if elapsed >= offlineStopDelay {
 		d.state = DetStateOfflineConfirmed
 		d.stopUIIfNeeded(ctx)
 		d.stopGuardIfNeeded(ctx)
 		d.state = DetStateOffline
+		return
+	}
+
+	if elapsed >= offlineGrace {
+		d.state = DetStateOfflineConfirmed
 		return
 	}
 
@@ -605,13 +613,56 @@ func (d *Detector) handleOffline(ctx context.Context) {
 
 	d.state = DetStateTransition
 }
-
 func (d *Detector) handleUnknown() {
 	if d.state == DetStateUnknown {
 		d.state = DetStateStarting
 	}
 }
+func (d *Detector) offlineStopDelaySeconds() int {
+	base := d.offlineGraceSeconds()
+	if !d.shouldDelayOfflineStop() {
+		return base
+	}
 
+	hold := base + d.healthCommandTimeoutSeconds() + d.doctorCommandTimeoutSeconds() + 30
+	if hold < 180 {
+		hold = 180
+	}
+	return hold
+}
+
+func (d *Detector) shouldDelayOfflineStop() bool {
+	if d.candidateBatchKey != "" {
+		return true
+	}
+	if d.hasPendingCandidateTarget("openclaw") {
+		return true
+	}
+	until := d.readStartupProtectionUntil()
+	return !until.IsZero() && time.Now().UTC().Before(until)
+}
+
+func (d *Detector) hasPendingCandidateTarget(target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+
+	manifest, err := d.loadManifest()
+	if err != nil {
+		return false
+	}
+
+	for _, snap := range manifest.CandidateTargets {
+		if snap.State == backup.SnapshotStateBad {
+			continue
+		}
+		if strings.TrimSpace(snap.TargetKeyOrName()) == target {
+			return true
+		}
+	}
+	return false
+}
 func (d *Detector) ensureGuardRunning(ctx context.Context) {
 	if strings.TrimSpace(d.guardExePath) == "" {
 		return
@@ -848,6 +899,11 @@ func (d *Detector) dispatchEvent(ctx context.Context, eventType, message string,
 		return
 	}
 
+	if strings.TrimSpace(d.cfg.RootDir) != "" {
+		notify.SetRootDir(d.cfg.RootDir)
+		notify.InitCredentialsStore(d.cfg.RootDir)
+	}
+
 	event := protocol.Event{
 		Type:    eventType,
 		AgentID: strings.TrimSpace(d.cfg.AgentID),
@@ -860,7 +916,6 @@ func (d *Detector) dispatchEvent(ctx context.Context, eventType, message string,
 		d.logger.Printf("detector notify failed | type=%s error=%v", eventType, err)
 	}
 }
-
 func (d *Detector) guardIsRunning() bool {
 	if strings.TrimSpace(d.guardExePath) == "" {
 		return false

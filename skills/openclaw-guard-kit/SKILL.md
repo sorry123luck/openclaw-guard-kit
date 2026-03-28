@@ -51,3 +51,4 @@ Use this path only when the operation must preserve OpenClaw's own command seman
 - One known protected file + known final content -> `guard.exe guarded-write`
 - Must invoke OpenClaw control-plane write command itself -> `guard.exe openclaw-op`
 - Guard reports rollback / self-heal / candidate / validation issue -> stop and follow guard
+- Never manually skip candidate -> verify -> promote/rollback, and do not use restart, pause-monitoring, resume-monitoring, or baseline refresh to force candidate content to become trusted
