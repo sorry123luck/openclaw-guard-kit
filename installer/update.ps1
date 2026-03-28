@@ -392,21 +392,37 @@ $detectorCommandLine = Register-DetectorAutoStart -DetectorExe $manifest.artifac
 Write-Step "Starting detector..." "正在启动守护检测器"
 $detectorStartResult = Start-DetectorIfNeeded -DetectorExe $manifest.artifacts.guardDetectorExe -OpenClawRoot $manifest.openClawRoot
 
-$manifest.updatedAt = (Get-Date).ToString("o")
-$manifest.updatedFrom = $SourceDir
+$updatedAtValue = (Get-Date).ToString("o")
+$detectorValue = [pscustomobject]@{
+    executable = $manifest.artifacts.guardDetectorExe
+    commandLine = $detectorCommandLine
+    autoStartName = (Get-DetectorAutoStartName)
+    autoStartRegistered = $true
+    running = $detectorStartResult.Running
+    startedNow = $detectorStartResult.StartedNow
+    message = $detectorStartResult.Message
+}
+
+if ($manifest.PSObject.Properties.Name -contains "updatedAt") {
+    $manifest.updatedAt = $updatedAtValue
+} else {
+    $manifest | Add-Member -NotePropertyName updatedAt -NotePropertyValue $updatedAtValue
+}
+
+if ($manifest.PSObject.Properties.Name -contains "updatedFrom") {
+    $manifest.updatedFrom = $SourceDir
+} else {
+    $manifest | Add-Member -NotePropertyName updatedFrom -NotePropertyValue $SourceDir
+}
 
 if ($manifest.PSObject.Properties.Name -contains "doctor") {
     [void]$manifest.PSObject.Properties.Remove("doctor")
 }
 
-$manifest.detector = [pscustomobject]@{
-    executable          = $manifest.artifacts.guardDetectorExe
-    commandLine         = $detectorCommandLine
-    autoStartName       = (Get-DetectorAutoStartName)
-    autoStartRegistered = $true
-    running             = $detectorStartResult.Running
-    startedNow          = $detectorStartResult.StartedNow
-    message             = $detectorStartResult.Message
+if ($manifest.PSObject.Properties.Name -contains "detector") {
+    $manifest.detector = $detectorValue
+} else {
+    $manifest | Add-Member -NotePropertyName detector -NotePropertyValue $detectorValue
 }
 
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
