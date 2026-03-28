@@ -25,6 +25,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "installer") | Ou
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "skills\openclaw-guard-kit") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "templates") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "tools\wecom-bridge") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "cmd\guard") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "cmd\guard-detector") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "cmd\guard-ui") | Out-Null
 
 Write-Host "Building guard.exe..."
 go build -trimpath -o (Join-Path $StageDir "guard.exe") .\cmd\guard
@@ -63,6 +66,12 @@ Copy-Item ".\skills\openclaw-guard-kit\*" (Join-Path $StageDir "skills\openclaw-
 
 # root-level tools
 Copy-Item ".\tools\wecom-bridge\*" (Join-Path $StageDir "tools\wecom-bridge") -Recurse -Force
+
+# minimal source-compatible files for legacy install-package.ps1 integrity check
+Copy-Item ".\go.mod" (Join-Path $StageDir "go.mod") -Force
+Copy-Item ".\cmd\guard\main.go" (Join-Path $StageDir "cmd\guard\main.go") -Force
+Copy-Item ".\cmd\guard-detector\main.go" (Join-Path $StageDir "cmd\guard-detector\main.go") -Force
+Copy-Item ".\cmd\guard-ui\main.go" (Join-Path $StageDir "cmd\guard-ui\main.go") -Force
 
 $manifest = [ordered]@{
   packageName = $PackageName
