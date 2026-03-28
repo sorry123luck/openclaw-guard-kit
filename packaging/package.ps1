@@ -22,9 +22,9 @@ if (Test-Path $ZipPath) {
 
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "installer") | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "bundle\templates") | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "bundle\skills\openclaw-guard-kit") | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "bundle\tools\wecom-bridge") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "skills\openclaw-guard-kit") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "templates") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "tools\wecom-bridge") | Out-Null
 
 Write-Host "Building guard.exe..."
 go build -trimpath -o (Join-Path $StageDir "guard.exe") .\cmd\guard
@@ -55,9 +55,14 @@ foreach ($name in $installerFiles) {
   }
 }
 
-Copy-Item ".\templates\*" (Join-Path $StageDir "bundle\templates") -Recurse -Force
-Copy-Item ".\skills\openclaw-guard-kit\*" (Join-Path $StageDir "bundle\skills\openclaw-guard-kit") -Recurse -Force
-Copy-Item ".\tools\wecom-bridge\*" (Join-Path $StageDir "bundle\tools\wecom-bridge") -Recurse -Force
+# root-level templates
+Copy-Item ".\templates\*" (Join-Path $StageDir "templates") -Recurse -Force
+
+# root-level skills
+Copy-Item ".\skills\openclaw-guard-kit\*" (Join-Path $StageDir "skills\openclaw-guard-kit") -Recurse -Force
+
+# root-level tools
+Copy-Item ".\tools\wecom-bridge\*" (Join-Path $StageDir "tools\wecom-bridge") -Recurse -Force
 
 $manifest = [ordered]@{
   packageName = $PackageName
