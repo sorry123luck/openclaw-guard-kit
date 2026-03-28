@@ -112,11 +112,20 @@ $packageRoot = Resolve-PackageRoot -ExtractedRoot $extractRoot
 $installScript = Join-Path $packageRoot "installer\install-package.ps1"
 
 Write-Step "Running package installer..." "正在执行安装脚本"
-& powershell -ExecutionPolicy Bypass -File $installScript `
-  -ProjectDir $packageRoot `
-  -InstallDir $InstallDir `
-  -OpenClawRoot $OpenClawRoot `
-  -ForceRebuild:$ForceRebuild
+
+$installArgs = @(
+  "-ExecutionPolicy", "Bypass",
+  "-File", $installScript,
+  "-ProjectDir", $packageRoot,
+  "-InstallDir", $InstallDir,
+  "-OpenClawRoot", $OpenClawRoot
+)
+
+if ($ForceRebuild) {
+  $installArgs += "-ForceRebuild"
+}
+
+& powershell @installArgs
 
 if ($LASTEXITCODE -ne 0) {
   throw "install-package.ps1 failed with exit code $LASTEXITCODE"
