@@ -42,9 +42,6 @@ func (c *PipeClient) Request(ctx context.Context, msg protocol.Message) (protoco
 	if msg.TargetKey == "" && msg.Target != "" {
 		msg.TargetKey = msg.Target
 	}
-	if msg.Mode == "" {
-		msg.Mode = protocol.WriteModeReject
-	}
 
 	c.logger.Debug(
 		"pipe request sending",
@@ -56,9 +53,7 @@ func (c *PipeClient) Request(ctx context.Context, msg protocol.Message) (protoco
 		"kind", msg.Kind,
 		"path", msg.Path,
 		"requestId", msg.RequestID,
-		"leaseId", msg.LeaseID,
 		"clientId", msg.ClientID,
-		"mode", msg.Mode,
 	)
 
 	if err := json.NewEncoder(conn).Encode(msg); err != nil {
@@ -88,30 +83,10 @@ func (c *PipeClient) Request(ctx context.Context, msg protocol.Message) (protoco
 		"kind", resp.Kind,
 		"path", resp.Path,
 		"requestId", resp.RequestID,
-		"leaseId", resp.LeaseID,
 		"clientId", resp.ClientID,
-		"queuePosition", resp.QueuePosition,
 	)
 
 	return resp, nil
-}
-
-func (c *PipeClient) RequestWrite(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
-	msg.Type = protocol.MessageWriteRequest
-	if msg.Mode == "" {
-		msg.Mode = protocol.WriteModeReject
-	}
-	return c.Request(ctx, msg)
-}
-
-func (c *PipeClient) CompleteWrite(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
-	msg.Type = protocol.MessageWriteCompleted
-	return c.Request(ctx, msg)
-}
-
-func (c *PipeClient) FailWrite(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
-	msg.Type = protocol.MessageWriteFailed
-	return c.Request(ctx, msg)
 }
 
 func (c *PipeClient) Status(ctx context.Context) (protocol.Message, error) {

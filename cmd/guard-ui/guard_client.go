@@ -21,10 +21,9 @@ type GuardCLI struct {
 }
 
 type StatusSnapshot struct {
-	MonitoringStatus string
-	DetectorStatus   string
-	GatewayStatus    string
-	GuardStatus      string
+	DetectorStatus string
+	GatewayStatus  string
+	GuardStatus    string
 
 	AgentID      string
 	ConfigPath   string
@@ -33,12 +32,9 @@ type StatusSnapshot struct {
 	PipeName     string
 	State        string
 	WatchTargets string
-	ActiveLeases string
-	QueueDepth   string
 	LastEvent    string
 	StartedAt    string
 
-	MonitoringPaused      bool
 	DetectorNotifyType    string
 	DetectorNotifyMessage string
 	DetectorNotifyAt      time.Time
@@ -141,17 +137,10 @@ func NewGuardCLI(cfg UIConfig) *GuardCLI {
 
 func (c *GuardCLI) Snapshot(ctx context.Context) StatusSnapshot {
 	snap := StatusSnapshot{
-		MonitoringStatus: "未知",
-		GuardStatus:      "未知",
-		AgentID:          c.AgentID,
-		ConfigPath:       c.ConfigPath,
-		GuardExePath:     c.GuardExePath,
-	}
-
-	if state, err := c.MonitoringStatus(ctx); err == nil {
-		snap.MonitoringStatus = state
-	} else {
-		snap.MonitoringStatus = "异常"
+		GuardStatus:  "未知",
+		AgentID:      c.AgentID,
+		ConfigPath:   c.ConfigPath,
+		GuardExePath: c.GuardExePath,
 	}
 
 	detectorFile := c.readDetectorStatus()
@@ -187,18 +176,10 @@ func (c *GuardCLI) Snapshot(ctx context.Context) StatusSnapshot {
 		snap.PipeName = strings.TrimSpace(details["pipe"])
 		snap.State = strings.TrimSpace(details["state"])
 		snap.WatchTargets = strings.TrimSpace(details["watchTargets"])
-		snap.ActiveLeases = strings.TrimSpace(details["activeLeases"])
-		snap.QueueDepth = strings.TrimSpace(details["queueDepth"])
 		snap.LastEvent = strings.TrimSpace(details["lastEvent"])
 		snap.StartedAt = strings.TrimSpace(details["startedAt"])
 	} else {
 		snap.GuardStatus = "异常"
-	}
-
-	snap.MonitoringPaused = c.IsMonitoringPaused()
-	if snap.MonitoringPaused {
-		snap.GuardStatus = "已暂停"
-		snap.State = "paused"
 	}
 
 	return snap
@@ -250,10 +231,6 @@ func (c *GuardCLI) GuardStatusDetails(ctx context.Context) (map[string]string, e
 			details["agentId"] = strings.TrimSpace(strings.TrimPrefix(line, "agent:"))
 		case strings.HasPrefix(line, "watchTargets:"):
 			details["watchTargets"] = strings.TrimSpace(strings.TrimPrefix(line, "watchTargets:"))
-		case strings.HasPrefix(line, "activeLeases:"):
-			details["activeLeases"] = strings.TrimSpace(strings.TrimPrefix(line, "activeLeases:"))
-		case strings.HasPrefix(line, "queueDepth:"):
-			details["queueDepth"] = strings.TrimSpace(strings.TrimPrefix(line, "queueDepth:"))
 		case strings.HasPrefix(line, "lastEvent:"):
 			details["lastEvent"] = strings.TrimSpace(strings.TrimPrefix(line, "lastEvent:"))
 		case strings.HasPrefix(line, "startedAt:"):
@@ -262,38 +239,6 @@ func (c *GuardCLI) GuardStatusDetails(ctx context.Context) (map[string]string, e
 	}
 
 	return details, nil
-}
-func (c *GuardCLI) monitoringArgs(subcommand string) []string {
-	args := []string{subcommand}
-
-	if strings.TrimSpace(c.ConfigPath) != "" {
-		args = append(args, "--config", c.ConfigPath)
-	}
-	if strings.TrimSpace(c.RootDir) != "" {
-		args = append(args, "--root", c.RootDir)
-	}
-	if strings.TrimSpace(c.AgentID) != "" {
-		args = append(args, "--agent", c.AgentID)
-	}
-
-	return args
-}
-
-func (c *GuardCLI) MonitoringStatus(ctx context.Context) (string, error) {
-	out, err := c.run(ctx, c.monitoringArgs("monitoring-status")...)
-	if err != nil {
-		return "", err
-	}
-
-	lower := strings.ToLower(out)
-	switch {
-	case strings.Contains(lower, "monitoring: paused"):
-		return "已暂停", nil
-	case strings.Contains(lower, "monitoring: active"):
-		return "监控中", nil
-	default:
-		return strings.TrimSpace(out), nil
-	}
 }
 func (c *GuardCLI) OpenLogsDir() string {
 	// 优先尊重配置文件中的日志路径
@@ -342,32 +287,6 @@ func extractLogDirFromConfig(configPath string) string {
 func (c *GuardCLI) OpenConfigDir() string {
 	return filepath.Join(c.RootDir, ".guard-state")
 }
-func (c *GuardCLI) monitoringPausePath() string {
-	return filepath.Join(c.RootDir, ".guard-state", "monitor.paused")
-}
-
-func (c *GuardCLI) IsMonitoringPaused() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	out, err := c.run(ctx, c.monitoringArgs("monitoring-status")...)
-	if err != nil {
-		return false
-	}
-
-	lower := strings.ToLower(strings.TrimSpace(out))
-	return strings.Contains(lower, "monitoring: paused")
-}
-
-func (c *GuardCLI) PauseMonitoring(ctx context.Context) error {
-	_, err := c.run(ctx, c.monitoringArgs("pause-monitoring")...)
-	return err
-}
-
-func (c *GuardCLI) ResumeMonitoring(ctx context.Context) error {
-	_, err := c.run(ctx, c.monitoringArgs("resume-monitoring")...)
-	return err
-}
 func (c *GuardCLI) CandidateStatus(ctx context.Context) (string, error) {
 	return c.run(ctx, "candidate-status", "--root", c.RootDir)
 }
@@ -380,42 +299,6 @@ func (c *GuardCLI) PromoteCandidate(ctx context.Context, target string) error {
 func (c *GuardCLI) DiscardCandidate(ctx context.Context, target string) error {
 	_, err := c.run(ctx, "discard-candidate", "--root", c.RootDir, "--target", strings.TrimSpace(target))
 	return err
-}
-func (c *GuardCLI) TestGuardWrite(ctx context.Context) (string, error) {
-	requestID := fmt.Sprintf("ui-test-%d", time.Now().Unix())
-	requestOut, err := c.run(
-		ctx,
-		"request-write",
-		"--agent", c.AgentID,
-		"--target-key", "openclaw",
-		"--kind", "openclaw",
-		"--client", "guard-ui",
-		"--request", requestID,
-		"--lease", "30",
-	)
-	if err != nil {
-		return "", err
-	}
-
-	leaseID := extractField(requestOut, "leaseId:")
-	if leaseID == "" {
-		return requestOut, fmt.Errorf("request-write succeeded but leaseId was not found in output")
-	}
-
-	completeOut, err := c.run(
-		ctx,
-		"complete-write",
-		"--lease-id", leaseID,
-		"--target-key", "openclaw",
-		"--kind", "openclaw",
-		"--client", "guard-ui",
-		"--request", requestID,
-	)
-	if err != nil {
-		return requestOut + "\r\n\r\n" + completeOut, err
-	}
-
-	return strings.TrimSpace(requestOut + "\r\n\r\n" + completeOut), nil
 }
 
 // CompleteTelegramBinding 完成 Telegram 绑定（软件通知绑定，不绑 Agent）

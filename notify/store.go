@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"openclaw-guard-kit/internal/guard"
 )
 
 const (
@@ -58,15 +55,9 @@ type StoreData struct {
 }
 
 type Store struct {
-	mu          sync.Mutex
-	path        string
-	data        StoreData
-	guardClient *guard.Client
-}
-
-// SetGuardClient sets the guard client for guarded writes.
-func (s *Store) SetGuardClient(gc *guard.Client) {
-	s.guardClient = gc
+	mu   sync.Mutex
+	path string
+	data StoreData
 }
 
 func NewStore(path string) (*Store, error) {
@@ -347,10 +338,6 @@ func (s *Store) saveLocked() error {
 		return err
 	}
 
-	// 如果有 guardClient，通过受保护写入；否则直接写入文件（用于 CLI 绑定场景）
-	if s.guardClient != nil {
-		return s.guardClient.WriteFile(context.Background(), s.path, raw)
-	}
 	return os.WriteFile(s.path, raw, 0o644)
 }
 

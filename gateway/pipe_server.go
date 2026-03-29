@@ -124,7 +124,6 @@ func (s *PipeServer) handleConn(ctx context.Context, conn net.Conn) {
 	var msg protocol.Message
 	if err := json.NewDecoder(conn).Decode(&msg); err != nil {
 		s.logger.Error("pipe decode failed", "error", err)
-
 		_ = json.NewEncoder(conn).Encode(protocol.Message{
 			Type:    protocol.MessageError,
 			Status:  protocol.StatusError,
@@ -137,23 +136,6 @@ func (s *PipeServer) handleConn(ctx context.Context, conn net.Conn) {
 	if msg.TargetKey == "" && msg.Target != "" {
 		msg.TargetKey = msg.Target
 	}
-	if msg.Mode == "" {
-		msg.Mode = protocol.WriteModeReject
-	}
-
-	s.logger.Debug(
-		"pipe request received",
-		"type", msg.Type,
-		"agent", msg.AgentID,
-		"target", msg.Target,
-		"targetKey", msg.TargetKey,
-		"kind", msg.Kind,
-		"path", msg.Path,
-		"requestId", msg.RequestID,
-		"leaseId", msg.LeaseID,
-		"clientId", msg.ClientID,
-		"mode", msg.Mode,
-	)
 
 	switch msg.Type {
 	case protocol.TypeGuardStatusRequest:
@@ -279,7 +261,6 @@ func (s *PipeServer) handleConn(ctx context.Context, conn net.Conn) {
 			"kind", msg.Kind,
 			"path", msg.Path,
 			"requestId", msg.RequestID,
-			"leaseId", msg.LeaseID,
 			"clientId", msg.ClientID,
 			"error", err,
 		)
@@ -288,7 +269,6 @@ func (s *PipeServer) handleConn(ctx context.Context, conn net.Conn) {
 			Type:      protocol.MessageError,
 			Status:    protocol.StatusError,
 			RequestID: msg.RequestID,
-			LeaseID:   msg.LeaseID,
 			ClientID:  msg.ClientID,
 			AgentID:   msg.AgentID,
 			Target:    msg.Target,
@@ -324,9 +304,7 @@ func (s *PipeServer) handleConn(ctx context.Context, conn net.Conn) {
 		"kind", resp.Kind,
 		"path", resp.Path,
 		"requestId", resp.RequestID,
-		"leaseId", resp.LeaseID,
 		"clientId", resp.ClientID,
-		"queuePosition", resp.QueuePosition,
 	)
 }
 

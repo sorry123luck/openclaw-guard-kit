@@ -59,23 +59,7 @@ function Read-JsonFile {
     return ($raw | ConvertFrom-Json)
 }
 
-function Get-SkillSourceDir {
-    param([string]$Root)
 
-    $candidates = @(
-        (Join-Path $Root "skills\openclaw-guard-kit"),
-        (Join-Path $Root "skills\guard-flow")
-    )
-
-    foreach ($candidate in $candidates) {
-        $skillFile = Join-Path $candidate "SKILL.md"
-        if (Test-Path -LiteralPath $skillFile) {
-            return (Resolve-Path -LiteralPath $candidate).Path
-        }
-    }
-
-    throw "Skill source directory not found. Expected skills\openclaw-guard-kit or skills\guard-flow."
-}
 
 function Get-OpenClawConfigPath {
     param([string]$Root)
@@ -102,115 +86,7 @@ function Get-DefaultAgentId {
     return "main"
 }
 
-function Get-WorkspaceInfos {
-    param(
-        $Config,
-        [string]$OpenClawRootPath
-    )
 
-    $result = New-Object System.Collections.ArrayList
-    $seen = @{}
-
-    function Add-Workspace {
-        param(
-            [string]$WorkspacePath,
-            [string]$Source
-        )
-
-        if ([string]::IsNullOrWhiteSpace($WorkspacePath)) {
-            return
-        }
-
-        $expanded = [Environment]::ExpandEnvironmentVariables($WorkspacePath)
-        if ($expanded.StartsWith("~")) {
-            $expanded = Join-Path $env:USERPROFILE $expanded.Substring(1).TrimStart("\","/")
-        }
-
-        if (-not [System.IO.Path]::IsPathRooted($expanded)) {
-            $expanded = Join-Path $OpenClawRootPath $expanded
-        }
-
-        $full = [System.IO.Path]::GetFullPath($expanded)
-        $key = $full.ToLowerInvariant()
-
-        if (-not $seen.ContainsKey($key)) {
-            $seen[$key] = $true
-            [void]$result.Add([pscustomobject]@{
-                Path   = $full
-                Source = $Source
-            })
-        }
-    }
-
-    # 1) legacy / single-agent shape: agent.workspace
-    if ($null -ne $Config -and
-        $null -ne $Config.agent -and
-        -not [string]::IsNullOrWhiteSpace($Config.agent.workspace)) {
-        Add-Workspace -WorkspacePath ([string]$Config.agent.workspace) -Source "agent.workspace"
-    }
-
-    # 2) defaults shape: agents.defaults.workspace
-    if ($null -ne $Config -and
-        $null -ne $Config.agents -and
-        $null -ne $Config.agents.defaults -and
-        -not [string]::IsNullOrWhiteSpace($Config.agents.defaults.workspace)) {
-        Add-Workspace -WorkspacePath ([string]$Config.agents.defaults.workspace) -Source "agents.defaults.workspace"
-    }
-
-    # 3) per-agent shape: agents.list[].workspace
-    if ($null -ne $Config -and
-        $null -ne $Config.agents -and
-        $null -ne $Config.agents.list) {
-
-        foreach ($agent in $Config.agents.list) {
-            if ($null -eq $agent) {
-                continue
-            }
-
-            $agentId = ""
-            if (-not [string]::IsNullOrWhiteSpace($agent.id)) {
-                $agentId = [string]$agent.id
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($agent.workspace)) {
-                $source = "agents.list.workspace"
-                if (-not [string]::IsNullOrWhiteSpace($agentId)) {
-                    $source = "agents.list.$agentId.workspace"
-                }
-                Add-Workspace -WorkspacePath ([string]$agent.workspace) -Source $source
-                continue
-            }
-
-            # fallback: infer default workspace naming from agent id
-            if (-not [string]::IsNullOrWhiteSpace($agentId)) {
-                if ($agentId -eq "main") {
-                    Add-Workspace -WorkspacePath (Join-Path $OpenClawRootPath "workspace") -Source "agents.list.$agentId.inferred"
-                }
-                else {
-                    Add-Workspace -WorkspacePath (Join-Path $OpenClawRootPath ("workspace-" + $agentId)) -Source "agents.list.$agentId.inferred"
-                }
-            }
-        }
-    }
-
-    # 4) filesystem supplement:
-    #    also pick up real existing workspace folders under ~/.openclaw
-    if (Test-Path -LiteralPath $OpenClawRootPath) {
-        Get-ChildItem -LiteralPath $OpenClawRootPath -Directory -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.Name -eq "workspace" -or $_.Name -like "workspace-*"
-            } |
-            ForEach-Object {
-                Add-Workspace -WorkspacePath $_.FullName -Source "filesystem"
-            }
-    }
-
-    if ($result.Count -eq 0) {
-        Add-Workspace -WorkspacePath (Join-Path $OpenClawRootPath "workspace") -Source "fallback"
-    }
-
-    return @($result)
-}
 
 function Copy-DirectoryContent {
     param(
@@ -453,7 +329,6 @@ $OpenClawRoot = Resolve-ExistingPath -Path $OpenClawRoot -Label "OpenClaw root"
 
 Write-Step "Checking package integrity..." "正在检查程序完整性"
 
-$skillSourceDir = Get-SkillSourceDir -Root $ProjectDir
 $requiredPaths = @(
     (Join-Path $ProjectDir "go.mod"),
     (Join-Path $ProjectDir "cmd\guard\main.go"),
@@ -464,7 +339,6 @@ $requiredPaths = @(
     (Join-Path $ProjectDir "installer\update.ps1"),
     (Join-Path $ProjectDir "installer\uninstall.ps1"),
     (Join-Path $ProjectDir "installer\toggle-detector.ps1"),
-    (Join-Path $skillSourceDir "SKILL.md"),
     (Join-Path $ProjectDir "tools\wecom-bridge\index.mjs"),
     (Join-Path $ProjectDir "tools\wecom-bridge\package.json")
 )
@@ -492,14 +366,12 @@ Ensure-Directory $InstallDir
 $logsDir = Join-Path $InstallDir "logs"
 $bundleDir = Join-Path $InstallDir "bundle"
 $bundleTemplatesDir = Join-Path $bundleDir "templates"
-$bundleSkillsDir = Join-Path $bundleDir "skills\openclaw-guard-kit"
 $bundleToolsDir = Join-Path $bundleDir "tools\wecom-bridge"
 $installToolsDir = Join-Path $InstallDir "tools\wecom-bridge"
 $installInstallerDir = Join-Path $InstallDir "installer"
 
 Ensure-Directory $logsDir
 Ensure-Directory $bundleTemplatesDir
-Ensure-Directory $bundleSkillsDir
 Ensure-Directory $bundleToolsDir
 Ensure-Directory $installToolsDir
 Ensure-Directory $installInstallerDir
@@ -521,48 +393,10 @@ Copy-Item -LiteralPath (Join-Path $ProjectDir "templates\TOOLS.append.md") -Dest
 Copy-Item -LiteralPath (Join-Path $ProjectDir "installer\update.ps1") -Destination (Join-Path $installInstallerDir "update.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $ProjectDir "installer\uninstall.ps1") -Destination (Join-Path $installInstallerDir "uninstall.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $ProjectDir "installer\toggle-detector.ps1") -Destination (Join-Path $installInstallerDir "toggle-detector.ps1") -Force
-Copy-DirectoryContent -SourceDir $skillSourceDir -DestinationDir $bundleSkillsDir
 Copy-DirectoryContent -SourceDir $wecomBridgeSourceDir -DestinationDir $bundleToolsDir
 Copy-DirectoryContent -SourceDir $wecomBridgeSourceDir -DestinationDir $installToolsDir
 
-Write-Step "Installing shared skill..." "正在安装共享技能"
 
-$sharedSkillDir = Join-Path $OpenClawRoot "skills\openclaw-guard-kit"
-Ensure-Directory (Split-Path -Path $sharedSkillDir -Parent)
-Copy-DirectoryContent -SourceDir $bundleSkillsDir -DestinationDir $sharedSkillDir
-
-Write-Step "Updating workspace rules..." "正在写入工作区规则"
-
-$agentsTemplateText = Get-Content -LiteralPath (Join-Path $bundleTemplatesDir "AGENTS.append.md") -Raw -Encoding UTF8
-$toolsTemplateText = Get-Content -LiteralPath (Join-Path $bundleTemplatesDir "TOOLS.append.md") -Raw -Encoding UTF8
-
-$agentsBeginMarker = "<!-- OPENCLAW-GUARD-KIT:AGENTS BEGIN -->"
-$agentsEndMarker = "<!-- OPENCLAW-GUARD-KIT:AGENTS END -->"
-$toolsBeginMarker = "<!-- OPENCLAW-GUARD-KIT:TOOLS BEGIN -->"
-$toolsEndMarker = "<!-- OPENCLAW-GUARD-KIT:TOOLS END -->"
-
-foreach ($workspaceInfo in $workspaceInfos) {
-    $workspacePath = $workspaceInfo.Path
-    Ensure-Directory $workspacePath
-
-    $agentsFile = Join-Path $workspacePath "AGENTS.md"
-    $toolsFile = Join-Path $workspacePath "TOOLS.md"
-
-    Set-ManagedBlock -FilePath $agentsFile -BeginMarker $agentsBeginMarker -EndMarker $agentsEndMarker -Body $agentsTemplateText
-
-    $toolsBody = Render-Template -TemplateText $toolsTemplateText -Values @{
-        GUARD_INSTALL_DIR   = $InstallDir
-        GUARD_EXE           = $guardExe
-        GUARD_DETECTOR_EXE  = $guardDetectorExe
-        GUARD_UI_EXE        = $guardUiExe
-        OPENCLAW_ROOT       = $OpenClawRoot
-        WORKSPACE_PATH      = $workspacePath
-        DEFAULT_AGENT_ID    = $defaultAgentId
-        SHARED_SKILL_DIR    = $sharedSkillDir
-    }
-
-    Set-ManagedBlock -FilePath $toolsFile -BeginMarker $toolsBeginMarker -EndMarker $toolsEndMarker -Body $toolsBody
-}
 Write-Step "Registering detector auto-start..." "正在注册 detector 自启动"
 $detectorCommandLine = Register-DetectorAutoStart -DetectorExe $guardDetectorExe -OpenClawRoot $OpenClawRoot
 

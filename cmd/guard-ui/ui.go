@@ -24,15 +24,14 @@ type UIApp struct {
 	cfg    UIConfig
 	client *GuardCLI
 
-	mw            *walk.MainWindow
-	tray          *walk.NotifyIcon
-	icon          *walk.Icon
-	detectorVal   *walk.Label
-	guardVal      *walk.Label
-	gatewayVal    *walk.Label
-	agentVal      *walk.Label
-	configVal     *walk.Label
-	monitoringVal *walk.Label
+	mw          *walk.MainWindow
+	tray        *walk.NotifyIcon
+	icon        *walk.Icon
+	detectorVal *walk.Label
+	guardVal    *walk.Label
+	gatewayVal  *walk.Label
+	agentVal    *walk.Label
+	configVal   *walk.Label
 
 	// Telegram tab widgets
 	telegramTokenEdit   *walk.LineEdit
@@ -77,9 +76,7 @@ type UIApp struct {
 	resultDetail *walk.Label
 	resultHint   *walk.Label
 
-	pauseMonitorAction  *walk.Action
-	resumeMonitorAction *walk.Action
-	openLogsAction      *walk.Action
+	openLogsAction *walk.Action
 
 	trayNotifyPrimed    bool
 	lastDetectorTrayKey string
@@ -137,25 +134,21 @@ func (ui *UIApp) createMainWindow() error {
 				Title:  "运行状态",
 				Layout: Grid{Columns: 3},
 				Children: []Widget{
-					Label{Text: "监控状态"},
-					Label{AssignTo: &ui.monitoringVal, Text: "未知"},
-					Label{Text: ""},
-
 					Label{Text: "Detector 状态"},
 					Label{AssignTo: &ui.detectorVal, Text: "未知"},
-					Label{Text: ""}, // empty
+					Label{Text: ""},
 
 					Label{Text: "守护状态"},
 					Label{AssignTo: &ui.guardVal, Text: "未知"},
-					Label{Text: ""}, // empty
+					Label{Text: ""},
 
 					Label{Text: "网关状态"},
 					Label{AssignTo: &ui.gatewayVal, Text: "未知"},
-					Label{Text: ""}, // empty
+					Label{Text: ""},
 
 					Label{Text: "当前 Agent"},
 					Label{AssignTo: &ui.agentVal, Text: ui.cfg.AgentID},
-					Label{Text: ""}, // empty
+					Label{Text: ""},
 
 					Label{Text: "配置路径"},
 					Label{AssignTo: &ui.configVal, Text: ui.cfg.ConfigPath},
@@ -178,7 +171,6 @@ func (ui *UIApp) createMainWindow() error {
 								Title:  "Telegram",
 								Layout: VBox{},
 								Children: []Widget{
-									// 1. 凭证配置区
 									GroupBox{
 										Title:  "Telegram 凭证配置",
 										Layout: Grid{Columns: 2},
@@ -188,7 +180,6 @@ func (ui *UIApp) createMainWindow() error {
 											Label{Text: "(请输入 Telegram Bot Token)", TextColor: 0x808080},
 										},
 									},
-									// 2. 步骤说明区
 									GroupBox{
 										Title:  "配置步骤（软件通知绑定）",
 										Layout: VBox{},
@@ -204,36 +195,30 @@ func (ui *UIApp) createMainWindow() error {
 											},
 										},
 									},
-									// 3. 配对输入区
 									GroupBox{
 										Title:  "配对绑定",
 										Layout: Grid{Columns: 3},
 										Children: []Widget{
 											Label{Text: "配对码:"},
 											LineEdit{AssignTo: &ui.telegramCodeEdit, ReadOnly: true},
-											Label{Text: ""}, // empty
-
+											Label{Text: ""},
 											Label{Text: ""},
 											PushButton{Text: "自动绑定说明", OnClicked: ui.handleTelegramBinding},
 											Label{Text: ""},
 										},
 									},
-									// 4. 当前绑定状态卡
 									GroupBox{
 										Title:  "当前绑定状态",
 										Layout: Grid{Columns: 2},
 										Children: []Widget{
 											Label{Text: "当前状态:"},
 											Label{AssignTo: &ui.telegramStatusLabel, Text: "未绑定"},
-
 											Label{Text: "绑定用户:"},
 											Label{AssignTo: &ui.telegramBoundLabel, Text: "-"},
-
 											Label{Text: "上次测试结果:"},
 											Label{AssignTo: &ui.telegramTestLabel, Text: "-"},
 										},
 									},
-									// 主按钮区
 									Composite{
 										Layout: HBox{},
 										Children: []Widget{
@@ -250,7 +235,6 @@ func (ui *UIApp) createMainWindow() error {
 								Title:  "飞书",
 								Layout: VBox{},
 								Children: []Widget{
-									// 1. 凭证配置区
 									GroupBox{
 										Title:  "飞书凭证配置",
 										Layout: Grid{Columns: 2},
@@ -263,7 +247,6 @@ func (ui *UIApp) createMainWindow() error {
 											Label{Text: "(请输入飞书 App Secret)", TextColor: 0x808080},
 										},
 									},
-									// 2. 步骤说明区
 									GroupBox{
 										Title:  "配置步骤",
 										Layout: VBox{},
@@ -278,7 +261,6 @@ func (ui *UIApp) createMainWindow() error {
 											},
 										},
 									},
-									// 3. 配对输入区
 									GroupBox{
 										Title:  "配对绑定",
 										Layout: Grid{Columns: 3},
@@ -288,22 +270,18 @@ func (ui *UIApp) createMainWindow() error {
 											PushButton{Text: "自动绑定说明", OnClicked: ui.handleFeishuBinding},
 										},
 									},
-									// 4. 当前绑定状态卡
 									GroupBox{
 										Title:  "当前绑定状态",
 										Layout: Grid{Columns: 2},
 										Children: []Widget{
 											Label{Text: "当前状态:"},
 											Label{AssignTo: &ui.feishuStatusLabel, Text: "未配置"},
-
 											Label{Text: "绑定用户:"},
 											Label{AssignTo: &ui.feishuBoundLabel, Text: "-"},
-
 											Label{Text: "上次测试结果:"},
 											Label{AssignTo: &ui.feishuTestLabel, Text: "-"},
 										},
 									},
-									// 主按钮区
 									Composite{
 										Layout: HBox{},
 										Children: []Widget{
@@ -320,7 +298,6 @@ func (ui *UIApp) createMainWindow() error {
 								Title:  "企业微信",
 								Layout: VBox{},
 								Children: []Widget{
-									// 1. 凭证配置区
 									GroupBox{
 										Title:  "企业微信凭证配置",
 										Layout: Grid{Columns: 2},
@@ -328,13 +305,11 @@ func (ui *UIApp) createMainWindow() error {
 											Label{Text: "Bot ID:"},
 											LineEdit{AssignTo: &ui.wecomBotIDEdit},
 											Label{Text: "(请输入企业微信 Bot ID)", TextColor: 0x808080},
-
 											Label{Text: "Secret:"},
 											LineEdit{AssignTo: &ui.wecomSecretEdit, PasswordMode: true},
 											Label{Text: "(请输入企业微信 Bot Secret)", TextColor: 0x808080},
 										},
 									},
-									// 2. 步骤说明区
 									GroupBox{
 										Title:  "配置步骤",
 										Layout: VBox{},
@@ -349,34 +324,28 @@ func (ui *UIApp) createMainWindow() error {
 											},
 										},
 									},
-									// 3. 配对输入区
 									GroupBox{
 										Title:  "配对绑定",
 										Layout: Grid{Columns: 3},
 										Children: []Widget{
 											Label{Text: "配对码:"},
 											LineEdit{AssignTo: &ui.wecomCodeEdit, ReadOnly: true},
-											Label{Text: ""}, // empty
-
+											Label{Text: ""},
 											PushButton{Text: "自动绑定说明", OnClicked: ui.handleWecomBinding},
 										},
 									},
-									// 4. 当前绑定状态卡
 									GroupBox{
 										Title:  "当前绑定状态",
 										Layout: Grid{Columns: 2},
 										Children: []Widget{
 											Label{Text: "当前状态:"},
 											Label{AssignTo: &ui.wecomStatusLabel, Text: "未配置"},
-
 											Label{Text: "绑定用户:"},
 											Label{AssignTo: &ui.wecomBoundLabel, Text: "-"},
-
 											Label{Text: "上次测试结果:"},
 											Label{AssignTo: &ui.wecomTestLabel, Text: "-"},
 										},
 									},
-									// 主按钮区
 									Composite{
 										Layout: HBox{},
 										Children: []Widget{
@@ -427,43 +396,6 @@ func (ui *UIApp) createMainWindow() error {
 											},
 										},
 									},
-
-									GroupBox{
-										Title:  "监控控制",
-										Layout: VBox{},
-										Children: []Widget{
-											Composite{
-												Layout: HBox{},
-												Children: []Widget{
-													PushButton{Text: "暂停监控", OnClicked: ui.handlePauseGuard},
-													PushButton{Text: "恢复监控", OnClicked: ui.handleResumeGuard},
-													HSpacer{},
-												},
-											},
-											Label{
-												Text:      "暂停后不会自动回滚配置；恢复后继续检测非法改动。",
-												TextColor: 0x666666,
-											},
-										},
-									},
-
-									GroupBox{
-										Title:  "守护诊断",
-										Layout: VBox{},
-										Children: []Widget{
-											Composite{
-												Layout: HBox{},
-												Children: []Widget{
-													PushButton{Text: "测试守护写入", OnClicked: ui.handleGuardWriteTest},
-													HSpacer{},
-												},
-											},
-											Label{
-												Text:      "用于排查守护链路与写入流程。",
-												TextColor: 0x666666,
-											},
-										},
-									},
 								},
 							},
 						},
@@ -471,7 +403,6 @@ func (ui *UIApp) createMainWindow() error {
 				},
 			},
 
-			// 底部操作结果提示栏
 			GroupBox{
 				Title:   "操作结果",
 				MinSize: Size{Width: 0, Height: 80},
@@ -514,18 +445,6 @@ func (ui *UIApp) setupTray() error {
 	openAction.Triggered().Attach(func() { ui.showPanel() })
 	_ = ui.tray.ContextMenu().Actions().Add(openAction)
 
-	pauseAction := walk.NewAction()
-	ui.pauseMonitorAction = pauseAction
-	_ = pauseAction.SetText("暂停监控")
-	pauseAction.Triggered().Attach(func() { ui.handlePauseGuard() })
-	_ = ui.tray.ContextMenu().Actions().Add(pauseAction)
-
-	resumeAction := walk.NewAction()
-	ui.resumeMonitorAction = resumeAction
-	_ = resumeAction.SetText("恢复监控")
-	resumeAction.Triggered().Attach(func() { ui.handleResumeGuard() })
-	_ = ui.tray.ContextMenu().Actions().Add(resumeAction)
-
 	refreshAction := walk.NewAction()
 	_ = refreshAction.SetText("刷新状态")
 	refreshAction.Triggered().Attach(func() { ui.refreshStatusAsync("处理中", "正在刷新状态...", "") })
@@ -550,7 +469,6 @@ func (ui *UIApp) setupTray() error {
 		}
 	})
 
-	ui.updateTrayActions(StatusSnapshot{})
 	return nil
 }
 
@@ -599,24 +517,10 @@ func (ui *UIApp) applySnapshot(snapshot StatusSnapshot) {
 	ui.detectorVal.SetText(fallbackText(snapshot.DetectorStatus, "未知"))
 	ui.guardVal.SetText(fallbackText(snapshot.GuardStatus, "未知"))
 	ui.gatewayVal.SetText(fallbackText(snapshot.GatewayStatus, "未知"))
-	ui.monitoringVal.SetText(fallbackText(snapshot.MonitoringStatus, "未知"))
 	ui.agentVal.SetText(fallbackText(snapshot.AgentID, ui.cfg.AgentID))
 	ui.configVal.SetText(fallbackText(snapshot.ConfigPath, ui.cfg.ConfigPath))
 
-	ui.updateTrayActions(snapshot)
 	ui.maybeShowTrayNotifications(snapshot)
-}
-func (ui *UIApp) updateTrayActions(snapshot StatusSnapshot) {
-	paused := snapshot.MonitoringPaused ||
-		strings.EqualFold(strings.TrimSpace(snapshot.State), "paused") ||
-		strings.EqualFold(strings.TrimSpace(snapshot.GuardStatus), "已暂停")
-
-	if ui.pauseMonitorAction != nil {
-		ui.pauseMonitorAction.SetEnabled(!paused)
-	}
-	if ui.resumeMonitorAction != nil {
-		ui.resumeMonitorAction.SetEnabled(paused)
-	}
 }
 
 func (ui *UIApp) maybeShowTrayNotifications(snapshot StatusSnapshot) {
@@ -655,7 +559,7 @@ func (ui *UIApp) maybeShowTrayNotifications(snapshot StatusSnapshot) {
 
 		switch guardKey {
 		case protocol.EventDriftDetected:
-			_ = ui.tray.ShowError("OpenClaw Guard", "检测到未授权修改，已触发保护处理。如需手动修改，请右键 Guard 图标并点击“暂停监控”。")
+			_ = ui.tray.ShowError("OpenClaw Guard", "检测到未授权修改，已触发保护处理。请检查日志以了解详情。")
 		case protocol.EventRestoreCompleted:
 			_ = ui.tray.ShowInfo("OpenClaw Guard", "检测到配置异常变更，已自动恢复到受保护状态。")
 		case protocol.EventRestoreFailed:
@@ -666,19 +570,16 @@ func (ui *UIApp) maybeShowTrayNotifications(snapshot StatusSnapshot) {
 func (ui *UIApp) reloadStaticViews() {
 	notify.InitCredentialsStore(ui.cfg.RootDir)
 
-	// Telegram 默认态
 	ui.telegramStatusLabel.SetText("未绑定")
 	ui.telegramBoundLabel.SetText("-")
 	ui.telegramTestLabel.SetText("待测试")
 	ui.telegramVerifiedBotID = ""
 
-	// Feishu 默认态
 	ui.feishuStatusLabel.SetText("未绑定")
 	ui.feishuBoundLabel.SetText("-")
 	ui.feishuTestLabel.SetText("待测试")
 	ui.feishuVerifiedAppID = ""
 
-	// WeCom 默认态
 	ui.wecomStatusLabel.SetText("未绑定")
 	ui.wecomBoundLabel.SetText("-")
 	ui.wecomTestLabel.SetText("待测试")
@@ -766,7 +667,6 @@ func (ui *UIApp) handleTelegramTest() {
 			return
 		}
 
-		// 直接调用 Telegram getMe API 验证 token
 		botID, err := verifyTelegramToken(token)
 		if err != nil {
 			ui.mw.Synchronize(func() {
@@ -775,7 +675,6 @@ func (ui *UIApp) handleTelegramTest() {
 			return
 		}
 
-		// 保存凭证到持久化 store
 		if err := ui.client.SaveTelegramCredentials(context.Background(), token); err != nil {
 			ui.mw.Synchronize(func() {
 				ui.showResult("警告", "Token 验证成功，但保存凭证失败: "+err.Error(), "继续配对流程...")
@@ -783,10 +682,8 @@ func (ui *UIApp) handleTelegramTest() {
 		}
 
 		ui.mw.Synchronize(func() {
-			// 保存验证成功的 bot id 和 token
 			ui.telegramVerifiedBotID = botID
 			ui.telegramVerifiedToken = token
-			// 生成 6 位配对码
 			ui.telegramPairingCode = generatePairingCode()
 			ui.telegramCodeEdit.SetText(pairingCommand(ui.telegramPairingCode))
 			ui.showResult("成功", "Token 验证成功！请复制命令并发给 Telegram 机器人", pairingCommand(ui.telegramPairingCode)+"（3分钟内有效）")
@@ -796,9 +693,7 @@ func (ui *UIApp) handleTelegramTest() {
 	}()
 }
 
-// verifyTelegramToken 调用 Telegram getMe API 验证 token，返回 bot id
 func verifyTelegramToken(token string) (string, error) {
-	// 直接用 HTTP 调用，简化处理
 	resp, err := httpGet(fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token))
 	if err != nil {
 		return "", err
@@ -1083,12 +978,10 @@ func (ui *UIApp) handleTelegramBinding() {
 func (ui *UIApp) handleTelegramTestMsg() {
 	ui.showResult("处理中", "正在发送测试消息...", "")
 
-	// 优先从内存态获取 token
 	token := ui.telegramVerifiedToken
 	if token == "" {
 		token = strings.TrimSpace(ui.telegramTokenEdit.Text())
 	}
-	// 如果还是没有，尝试从 credentials store 读取
 	if token == "" {
 		notify.InitCredentialsStore(ui.cfg.RootDir)
 		token = notify.GetTelegramToken()
@@ -1101,12 +994,10 @@ func (ui *UIApp) handleTelegramTestMsg() {
 	var senderID string
 	var accountID string
 
-	// 优先从内存态获取 senderID
 	if ui.telegramPairingResult != nil && ui.telegramPairingResult.SenderID != "" {
 		senderID = ui.telegramPairingResult.SenderID
 		accountID = ui.telegramPairingResult.AccountID
 	} else {
-		// 从持久化文件读取已绑定的 Telegram senderID
 		bindingsPath := notify.BindingsPath(ui.cfg.RootDir)
 		store, err := notify.NewStore(bindingsPath)
 		if err != nil {
@@ -1129,7 +1020,6 @@ func (ui *UIApp) handleTelegramTestMsg() {
 		}
 	}
 
-	// 解析 chatID
 	chatID, err := strconv.ParseInt(senderID, 10, 64)
 	if err != nil {
 		ui.showResult("失败", "无效的 chatID: "+err.Error(), "")
@@ -1137,10 +1027,8 @@ func (ui *UIApp) handleTelegramTestMsg() {
 	}
 
 	go func() {
-		// 调用 Telegram sendMessage API (POST JSON)
 		success, errMsg := notify.SendTelegramMessage(token, chatID, "🔔 OpenClaw Guard 测试消息 - 绑定成功！")
 
-		// 持久化测试结果
 		notify.InitCredentialsStore(ui.cfg.RootDir)
 		bindingsPath := notify.BindingsPath(ui.cfg.RootDir)
 		store, err := notify.NewStore(bindingsPath)
@@ -1159,7 +1047,6 @@ func (ui *UIApp) handleTelegramTestMsg() {
 			}
 			ui.showResult("成功", "测试消息已发送到 Telegram", "请在手机端查看")
 			ui.telegramTestLabel.SetText("测试成功 " + time.Now().Format("15:04"))
-			// 刷新状态
 			ui.reloadStaticViews()
 		})
 	}()
@@ -1178,7 +1065,6 @@ func (ui *UIApp) handleTelegramUnbind() {
 			ui.telegramStatusLabel.SetText("未绑定")
 			ui.telegramBoundLabel.SetText("-")
 			ui.telegramTestLabel.SetText("待测试")
-			// 清空内存态
 			ui.telegramVerifiedBotID = ""
 			ui.telegramVerifiedToken = ""
 			ui.telegramPairingResult = nil
@@ -1362,76 +1248,6 @@ func (ui *UIApp) handleWecomUnbind() {
 				ui.wecomPairingWatcher = nil
 			}
 			notify.StopWecomBridge()
-		})
-	}()
-}
-
-// ===== 维护 Tab 操作处理 =====
-
-func (ui *UIApp) handlePauseGuard() {
-	ui.showResult("处理中", "正在暂停监控...", "")
-
-	go func() {
-		ctx := context.Background()
-		err := ui.client.PauseMonitoring(ctx)
-		snapshot := ui.client.Snapshot(ctx)
-
-		ui.mw.Synchronize(func() {
-			if err != nil {
-				ui.showResult("失败", "暂停监控失败: "+err.Error(), "请检查 .guard-state 目录权限")
-				if ui.tray != nil {
-					_ = ui.tray.ShowError("OpenClaw Guard", "暂停监控失败，请检查目录权限或守护日志。")
-				}
-				return
-			}
-
-			ui.applySnapshot(snapshot)
-			ui.reloadStaticViews()
-			ui.showResult("成功", "监控已暂停。", "暂停期间不会自动回滚配置文件。")
-			if ui.tray != nil {
-				_ = ui.tray.ShowInfo("OpenClaw Guard", "监控已暂停。")
-			}
-		})
-	}()
-}
-
-func (ui *UIApp) handleResumeGuard() {
-	ui.showResult("处理中", "正在恢复监控...", "")
-
-	go func() {
-		ctx := context.Background()
-		err := ui.client.ResumeMonitoring(ctx)
-		snapshot := ui.client.Snapshot(ctx)
-
-		ui.mw.Synchronize(func() {
-			if err != nil {
-				ui.showResult("失败", "恢复监控失败: "+err.Error(), "请检查 .guard-state 目录权限")
-				if ui.tray != nil {
-					_ = ui.tray.ShowError("OpenClaw Guard", "恢复监控失败，请检查目录权限或守护日志。")
-				}
-				return
-			}
-
-			ui.applySnapshot(snapshot)
-			ui.reloadStaticViews()
-			ui.showResult("成功", "监控已恢复。", "恢复后会继续检测并回滚非法改动。")
-			if ui.tray != nil {
-				_ = ui.tray.ShowInfo("OpenClaw Guard", "监控已恢复。")
-			}
-		})
-	}()
-}
-
-func (ui *UIApp) handleGuardWriteTest() {
-	ui.showResult("处理中", "正在测试守护写入链路...", "")
-	go func() {
-		out, err := ui.client.TestGuardWrite(context.Background())
-		ui.mw.Synchronize(func() {
-			if err != nil {
-				ui.showResult("失败", fmt.Sprintf("守护写入测试失败：%v", err), "请先确认 guard 服务已启动。")
-				return
-			}
-			ui.showResult("成功", firstLine(out), "已完成 request-write 与 complete-write。")
 		})
 	}()
 }

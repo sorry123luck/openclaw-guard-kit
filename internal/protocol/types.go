@@ -33,12 +33,6 @@ const (
 	EventTargetUnmanaged  = "target.unmanaged"
 
 	// 写入协议消息
-	MessageWriteRequest   = "write.request"
-	MessageWriteGranted   = "write.granted"
-	MessageWriteWait      = "write.wait"
-	MessageWriteCompleted = "write.completed"
-	MessageWriteFailed    = "write.failed"
-	MessageWriteReleased  = "write.released"
 
 	// guard 管理消息
 	TypeGuardStatusRequest  = "guard.status.request"
@@ -58,9 +52,6 @@ const (
 	KindAuthProfile = "auth-profiles"
 	KindModels      = "models"
 
-	WriteModeReject = "reject"
-	WriteModeBlock  = "block"
-
 	StatusGranted   = "granted"
 	StatusWaiting   = "waiting"
 	StatusBusy      = "busy"
@@ -68,7 +59,6 @@ const (
 	StatusTimeout   = "timeout"
 	StatusCompleted = "completed"
 	StatusFailed    = "failed"
-	StatusReleased  = "released"
 	StatusError     = "error"
 )
 
@@ -87,22 +77,17 @@ type Event struct {
 type Message struct {
 	Type      string `json:"type"`
 	RequestID string `json:"requestId,omitempty"`
-	LeaseID   string `json:"leaseId,omitempty"`
 	ClientID  string `json:"clientId,omitempty"`
 	AgentID   string `json:"agentId,omitempty"`
 
 	Target string `json:"target,omitempty"`
 
-	TargetKey     string    `json:"targetKey,omitempty"`
-	Kind          string    `json:"kind,omitempty"`
-	Path          string    `json:"path,omitempty"`
-	LeaseSeconds  int       `json:"leaseSeconds,omitempty"`
-	WaitSeconds   int       `json:"waitSeconds,omitempty"`
-	QueuePosition int       `json:"queuePosition,omitempty"`
-	Mode          string    `json:"mode,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
-	Status        string    `json:"status,omitempty"`
-	ExpiresAt     time.Time `json:"expiresAt,omitempty"`
+	TargetKey string    `json:"targetKey,omitempty"`
+	Kind      string    `json:"kind,omitempty"`
+	Path      string    `json:"path,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt,omitempty"`
 
 	PipeName string            `json:"pipeName,omitempty"`
 	Message  string            `json:"message,omitempty"`

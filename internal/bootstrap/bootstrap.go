@@ -1,7 +1,9 @@
 package bootstrap
 
 import (
-	"openclaw-guard-kit/internal/guard"
+	"context"
+
+	"openclaw-guard-kit/internal/protocol"
 	"openclaw-guard-kit/internal/robot"
 	"openclaw-guard-kit/internal/runtime"
 	"openclaw-guard-kit/logging"
@@ -9,10 +11,15 @@ import (
 	"openclaw-guard-kit/process"
 )
 
+type noopGuardCoordinator struct{}
+
+func (noopGuardCoordinator) HandleEvent(context.Context, protocol.Event) error {
+	return nil
+}
+
 type Dependencies struct {
 	PipeServer       runtime.PipeServer
 	Watcher          runtime.Watcher
-	LeaseManager     runtime.LeaseManager
 	Notifier         runtime.Notifier
 	Supervisor       runtime.Supervisor
 	RobotHub         runtime.RobotHub
@@ -28,7 +35,6 @@ func BuildRuntime(cfg any, logger *logging.Logger, deps Dependencies) (*runtime.
 
 	rt.PipeServer = deps.PipeServer
 	rt.Watcher = deps.Watcher
-	rt.LeaseManager = deps.LeaseManager
 
 	if deps.Notifier != nil {
 		rt.Notifier = deps.Notifier
@@ -72,7 +78,7 @@ func BuildRuntime(cfg any, logger *logging.Logger, deps Dependencies) (*runtime.
 	if deps.GuardCoordinator != nil {
 		rt.GuardCoordinator = deps.GuardCoordinator
 	} else {
-		rt.GuardCoordinator = guard.NewCoordinator(logger, rt.Dispatcher)
+		rt.GuardCoordinator = noopGuardCoordinator{}
 	}
 
 	if err := rt.Validate(); err != nil {

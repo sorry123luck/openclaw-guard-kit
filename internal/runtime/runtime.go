@@ -25,8 +25,6 @@ type Watcher interface {
 	Stop(context.Context) error
 }
 
-type LeaseManager interface{}
-
 type Notifier interface {
 	Notify(context.Context, protocol.Event) error
 }
@@ -54,10 +52,9 @@ type Runtime struct {
 	PipeServer PipeServer
 	Watcher    Watcher
 
-	LeaseManager LeaseManager
-	Notifier     Notifier
-	Supervisor   Supervisor
-	RobotHub     RobotHub
+	Notifier   Notifier
+	Supervisor Supervisor
+	RobotHub   RobotHub
 
 	EventBus   *EventBus
 	Dispatcher *Dispatcher
@@ -142,12 +139,48 @@ func (r *Runtime) Emit(ctx context.Context, event protocol.Event) error {
 	}
 
 	if logger != nil {
-		logger.Debug(
-			"runtime emit skipped",
-			"type", event.Type,
+		fields := []any{
+			"agent", event.AgentID,
 			"target", event.Target,
 			"targetKey", event.TargetKey,
-		)
+			"kind", event.Kind,
+			"path", event.Path,
+			"message", event.Message,
+		}
+
+		if reason := event.Data["reason"]; reason != "" {
+			fields = append(fields, "reason", reason)
+		}
+		if result := event.Data["result"]; result != "" {
+			fields = append(fields, "result", result)
+		}
+		if stateFile := event.Data["stateFile"]; stateFile != "" {
+			fields = append(fields, "stateFile", stateFile)
+		}
+		if baselineSha := event.Data["baselineSha"]; baselineSha != "" {
+			fields = append(fields, "baselineSha", baselineSha)
+		}
+		if baselineSize := event.Data["baselineSize"]; baselineSize != "" {
+			fields = append(fields, "baselineSize", baselineSize)
+		}
+		if errorMessage := event.Data["error"]; errorMessage != "" {
+			fields = append(fields, "error", errorMessage)
+		}
+
+		logger.Info(string(event.Type), fields...)
+	}
+
+	if dispatcher != nil {
+		if err := dispatcher.Dispatch(ctx, event); err != nil && logger != nil {
+			logger.Error(
+				"dispatch failed",
+				"agent", event.AgentID,
+				"targetKey", event.TargetKey,
+				"kind", event.Kind,
+				"path", event.Path,
+				"error", err,
+			)
+		}
 	}
 
 	return nil

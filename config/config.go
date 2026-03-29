@@ -26,6 +26,7 @@ type AppConfig struct {
 	BackupDir           string   `json:"backupDir"`
 	StateFile           string   `json:"stateFile"`
 	PollIntervalSeconds int      `json:"pollIntervalSeconds"`
+	DriftStableSeconds  int      `json:"driftStableSeconds"`
 	RestoreOnChange     bool     `json:"restoreOnChange"`
 	RestoreOnDelete     bool     `json:"restoreOnDelete"`
 	AutoPrepare         bool     `json:"autoPrepare"`
@@ -46,6 +47,7 @@ type Options struct {
 	BackupDir              string
 	StateFile              string
 	PollIntervalSeconds    int
+	DriftStableSeconds     int
 	LogFile                string
 }
 
@@ -59,6 +61,7 @@ type partialConfig struct {
 	BackupDir           *string `json:"backupDir"`
 	StateFile           *string `json:"stateFile"`
 	PollIntervalSeconds *int    `json:"pollIntervalSeconds"`
+	DriftStableSeconds  *int    `json:"driftStableSeconds"`
 	RestoreOnChange     *bool   `json:"restoreOnChange"`
 	RestoreOnDelete     *bool   `json:"restoreOnDelete"`
 	AutoPrepare         *bool   `json:"autoPrepare"`
@@ -96,6 +99,9 @@ func Resolve(opts Options) (AppConfig, error) {
 	}
 	if opts.PollIntervalSeconds > 0 {
 		cfg.PollIntervalSeconds = opts.PollIntervalSeconds
+	}
+	if opts.DriftStableSeconds > 0 {
+		cfg.DriftStableSeconds = opts.DriftStableSeconds
 	}
 	if opts.LogFile != "" {
 		cfg.LogFile = opts.LogFile
@@ -271,6 +277,7 @@ func defaultConfig() AppConfig {
 		IncludeAuthProfiles: true,
 		IncludeModels:       true,
 		PollIntervalSeconds: 2,
+		DriftStableSeconds:  5,
 		RestoreOnChange:     true,
 		RestoreOnDelete:     true,
 		AutoPrepare:         true,
@@ -331,6 +338,9 @@ func merge(base AppConfig, override partialConfig) AppConfig {
 	}
 	if override.PollIntervalSeconds != nil && *override.PollIntervalSeconds > 0 {
 		base.PollIntervalSeconds = *override.PollIntervalSeconds
+	}
+	if override.DriftStableSeconds != nil && *override.DriftStableSeconds > 0 {
+		base.DriftStableSeconds = *override.DriftStableSeconds
 	}
 	if override.RestoreOnChange != nil {
 		base.RestoreOnChange = *override.RestoreOnChange

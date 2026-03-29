@@ -10,13 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"openclaw-guard-kit/internal/guard"
 	"openclaw-guard-kit/internal/protocol"
 	"openclaw-guard-kit/logging"
 )
 
 var rootDir string
-var guardClient *guard.Client
 var store *Store
 
 // SetRootDir sets the root directory for storing binding files.
@@ -30,23 +28,6 @@ func GetRootDir() string {
 	return rootDir
 }
 
-// SetGuardClient sets the guard client used for guarded writes.
-// It should be called once at startup after the guard executable path is known.
-func SetGuardClient(guardExePath string, dir string, agentID string) {
-	rootDir = dir
-	guardClient = guard.NewClient(guardExePath, dir, agentID)
-}
-
-// getGuardClient returns the guard client if set, otherwise nil.
-func getGuardClient() *guard.Client {
-	return guardClient
-}
-
-// GetGuardClient returns the guard client for use by other packages.
-func GetGuardClient() *guard.Client {
-	return guardClient
-}
-
 // getStore returns the store instance, initializing it if needed.
 func getStore() *Store {
 	storePath := filepath.Join(GetRootDir(), ".guard-state", "bindings.json")
@@ -58,9 +39,6 @@ func getStore() *Store {
 			log.Printf("notify: failed to initialize store: %v", err)
 			return nil
 		}
-		if store != nil {
-			store.SetGuardClient(getGuardClient())
-		}
 		return store
 	}
 
@@ -71,9 +49,6 @@ func getStore() *Store {
 			log.Printf("notify: failed to switch store: %v", err)
 			return nil
 		}
-		if store != nil {
-			store.SetGuardClient(getGuardClient())
-		}
 		return store
 	}
 
@@ -82,24 +57,6 @@ func getStore() *Store {
 	}
 
 	return store
-}
-
-// WriteFileGuarded writes data to a file using the guard request-write/complete-write protocol.
-// If guardClient is not set, it returns an error (no fallback to direct write).
-func WriteFileGuarded(ctx context.Context, path string, data []byte) error {
-	if guardClient == nil {
-		return fmt.Errorf("guard client not set, guarded write required for %s", path)
-	}
-	return guardClient.WriteFile(ctx, path, data)
-}
-
-// RemoveFileGuarded removes a file using the guard protocol (by writing empty content).
-// If guardClient is not set, it returns an error (no fallback to direct removal).
-func RemoveFileGuarded(ctx context.Context, path string) error {
-	if guardClient == nil {
-		return fmt.Errorf("guard client not set, guarded removal required for %s", path)
-	}
-	return guardClient.RemoveFile(ctx, path)
 }
 
 type Notifier interface {
@@ -209,7 +166,6 @@ func isQuietEventType(t string) bool {
 func isErrorEventType(t string) bool {
 	switch t {
 	case protocol.EventRestoreFailed,
-		protocol.MessageWriteFailed,
 		protocol.MessageError,
 		protocol.EventGuardAnomaly:
 		return true
@@ -235,12 +191,7 @@ func moduleForEvent(t string) string {
 
 	case protocol.EventDriftDetected,
 		protocol.EventRestoreCompleted,
-		protocol.EventRestoreFailed,
-		protocol.MessageWriteRequest,
-		protocol.MessageWriteGranted,
-		protocol.MessageWriteCompleted,
-		protocol.MessageWriteFailed,
-		protocol.MessageWriteReleased:
+		protocol.EventRestoreFailed:
 		return "security"
 
 	case protocol.TypeGuardStopRequest,
@@ -271,7 +222,7 @@ func buildChannelEventText(e protocol.Event) string {
 			summary = "守护程序异常，请检查日志。"
 		}
 	case protocol.EventDriftDetected:
-		summary = "检测到 OpenClaw 配置发生未授权修改，已触发保护处理。\n如需手动修改配置，或执行插件安装/升级，请在右下角右键 Guard 图标，点击“暂停监控”；确认 OpenClaw 正常后，再点击“恢复监控”。"
+		summary = "检测到 OpenClaw 配置发生未授权修改，已触发保护处理。"
 	case protocol.EventRestoreCompleted:
 		summary = "已自动恢复到最近一次受保护的配置状态。"
 	case protocol.EventRestoreFailed:

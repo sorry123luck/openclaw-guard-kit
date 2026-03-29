@@ -2,6 +2,8 @@ package watch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,20 +18,25 @@ import (
 	"openclaw-guard-kit/logging"
 )
 
-type LeaseInspector interface {
-	HasActiveLease(target, path, agentID string) bool
-}
-
 type EventDispatcher interface {
 	Dispatch(context.Context, protocol.Event) error
 }
 
 type Service struct {
-	logger         *logging.Logger
-	dispatcher     EventDispatcher
-	backupSvc      *backup.Service
-	leaseInspector LeaseInspector
+	logger       *logging.Logger
+	dispatcher   EventDispatcher
+	backupSvc    *backup.Service
+	driftPending map[string]*pendingDrift
 }
+
+type pendingDrift struct {
+	Reason             string
+	Signature          string
+	FirstSeen          time.Time
+	LastChanged        time.Time
+	CandidateSignature string
+}
+
 type startupProtectFile struct {
 	Until time.Time `json:"until"`
 }
@@ -38,32 +45,18 @@ func NewService(
 	logger *logging.Logger,
 	dispatcher EventDispatcher,
 	backupSvc *backup.Service,
-	leaseInspector ...LeaseInspector,
+	_ ...interface{},
 ) *Service {
 	svc := &Service{
-		logger:     logger,
-		dispatcher: dispatcher,
-		backupSvc:  backupSvc,
-	}
-
-	if len(leaseInspector) > 0 {
-		svc.leaseInspector = leaseInspector[0]
+		logger:       logger,
+		dispatcher:   dispatcher,
+		backupSvc:    backupSvc,
+		driftPending: make(map[string]*pendingDrift),
 	}
 
 	return svc
 }
 
-func (s *Service) SetLeaseInspector(inspector LeaseInspector) {
-	s.leaseInspector = inspector
-}
-func monitoringPauseFile(cfg config.AppConfig) string {
-	return filepath.Join(filepath.Dir(cfg.StateFile), "monitor.paused")
-}
-
-func isMonitoringPaused(cfg config.AppConfig) bool {
-	_, err := os.Stat(monitoringPauseFile(cfg))
-	return err == nil
-}
 func startupProtectFilePath(cfg config.AppConfig) string {
 	return filepath.Join(filepath.Dir(cfg.StateFile), "startup-protect.json")
 }
@@ -126,6 +119,216 @@ func startupRestoreSuppressed(until time.Time, snapshot backup.Snapshot) bool {
 		return false
 	}
 	return isOpenClawSnapshot(snapshot)
+}
+func driftKey(snapshot backup.Snapshot) string {
+	if key := strings.TrimSpace(snapshot.TargetKey); key != "" {
+		return key
+	}
+	if name := strings.TrimSpace(snapshot.Name); name != "" {
+		return name
+	}
+	return strings.TrimSpace(snapshot.SourcePath)
+}
+
+func (s *Service) clearPendingDrift(snapshot backup.Snapshot) {
+	if s.driftPending == nil {
+		return
+	}
+	delete(s.driftPending, driftKey(snapshot))
+}
+
+func (s *Service) upsertPendingDrift(snapshot backup.Snapshot, reason, signature string, now time.Time) (*pendingDrift, bool) {
+	if s.driftPending == nil {
+		s.driftPending = make(map[string]*pendingDrift)
+	}
+
+	key := driftKey(snapshot)
+	state, ok := s.driftPending[key]
+	if !ok {
+		state = &pendingDrift{
+			Reason:      reason,
+			Signature:   signature,
+			FirstSeen:   now,
+			LastChanged: now,
+		}
+		s.driftPending[key] = state
+		return state, true
+	}
+
+	changed := state.Signature != signature || state.Reason != reason
+	if changed {
+		state.Reason = reason
+		state.Signature = signature
+		state.LastChanged = now
+		state.CandidateSignature = ""
+	}
+
+	return state, changed
+}
+
+func hashBytes(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func currentProtectedSignature(snapshot backup.Snapshot) (string, error) {
+	raw, err := os.ReadFile(snapshot.SourcePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "deleted", nil
+		}
+		return "", err
+	}
+
+	switch {
+	case isAuthProfilesSnapshot(snapshot):
+		protected, err := normalizeAuthProfilesProtectedBytes(raw)
+		if err == nil {
+			return "auth:" + hashBytes(protected), nil
+		}
+		return "auth-raw:" + hashBytes(raw), nil
+
+	case isOpenClawSnapshot(snapshot):
+		protected, err := normalizeOpenClawProtectedBytes(raw)
+		if err == nil {
+			return "openclaw:" + hashBytes(protected), nil
+		}
+		return "openclaw-raw:" + hashBytes(raw), nil
+
+	default:
+		return fmt.Sprintf("file:%s:%d", hashBytes(raw), len(raw)), nil
+	}
+}
+
+func findCandidateSnapshot(manifest backup.Manifest, snapshot backup.Snapshot) (backup.Snapshot, bool) {
+	targetKey := strings.TrimSpace(snapshot.TargetKey)
+	targetName := strings.TrimSpace(snapshot.Name)
+
+	for _, candidate := range manifest.CandidateTargets {
+		if candidate.State == backup.SnapshotStateBad {
+			continue
+		}
+
+		if targetKey != "" && strings.EqualFold(strings.TrimSpace(candidate.TargetKey), targetKey) {
+			return candidate, true
+		}
+		if targetName != "" && strings.EqualFold(strings.TrimSpace(candidate.Name), targetName) {
+			return candidate, true
+		}
+	}
+
+	return backup.Snapshot{}, false
+}
+
+func currentMatchesCandidate(manifest backup.Manifest, snapshot backup.Snapshot) (bool, error) {
+	candidate, ok := findCandidateSnapshot(manifest, snapshot)
+	if !ok {
+		return false, nil
+	}
+
+	drift, _, err := compareToBaseline(candidate)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return !drift, nil
+}
+
+func (s *Service) createCandidateFromCurrent(ctx context.Context, cfg config.AppConfig, snapshot backup.Snapshot, agentID, reason string) error {
+	targetName := snapshot.TargetKeyOrName()
+
+	candidate, err := s.backupSvc.CreateCandidateSnapshot(ctx, config.FileTarget{
+		Name: snapshot.Name,
+		Path: snapshot.SourcePath,
+	}, filepath.Dir(snapshot.BackupPath))
+	if err != nil {
+		return fmt.Errorf("create candidate snapshot for %s failed: %w", targetName, err)
+	}
+
+	if candidate.TargetKey == "" {
+		candidate.TargetKey = snapshot.TargetKey
+	}
+	if candidate.Kind == "" {
+		candidate.Kind = snapshot.Kind
+	}
+	if candidate.AgentID == "" {
+		candidate.AgentID = snapshot.AgentID
+	}
+
+	if err := s.backupSvc.UpsertCandidateSnapshot(cfg.StateFile, candidate); err != nil {
+		return fmt.Errorf("persist candidate snapshot for %s failed: %w", targetName, err)
+	}
+
+	s.emit(ctx, cfg, protocol.Event{
+		Type:      protocol.EventCandidateCreated,
+		AgentID:   agentID,
+		Target:    snapshot.Name,
+		TargetKey: snapshot.TargetKey,
+		Kind:      snapshot.Kind,
+		Path:      snapshot.SourcePath,
+		Message:   "drift stabilized; candidate snapshot created, awaiting verification",
+		At:        time.Now().UTC(),
+		Data: map[string]string{
+			"agentId":        agentID,
+			"reason":         reason,
+			"stage":          "candidate",
+			"stateFile":      cfg.StateFile,
+			"candidatePath":  candidate.BackupPath,
+			"stableSeconds":  fmt.Sprintf("%d", cfg.DriftStableSeconds),
+			"candidateState": "pending",
+		},
+	})
+
+	return nil
+}
+
+func (s *Service) restoreDeletedTarget(ctx context.Context, cfg config.AppConfig, snapshot backup.Snapshot, agentID, reason string) error {
+	if !cfg.RestoreOnDelete {
+		return nil
+	}
+
+	if err := s.backupSvc.Restore(snapshot); err != nil {
+		s.emit(ctx, cfg, protocol.Event{
+			Type:      protocol.EventRestoreFailed,
+			AgentID:   agentID,
+			Target:    snapshot.Name,
+			TargetKey: snapshot.TargetKey,
+			Kind:      snapshot.Kind,
+			Path:      snapshot.SourcePath,
+			Message:   err.Error(),
+			At:        time.Now().UTC(),
+			Data: map[string]string{
+				"agentId":   agentID,
+				"reason":    reason,
+				"result":    "failed",
+				"error":     err.Error(),
+				"stateFile": cfg.StateFile,
+			},
+		})
+		return err
+	}
+
+	s.emit(ctx, cfg, protocol.Event{
+		Type:      protocol.EventRestoreCompleted,
+		AgentID:   agentID,
+		Target:    snapshot.Name,
+		TargetKey: snapshot.TargetKey,
+		Kind:      snapshot.Kind,
+		Path:      snapshot.SourcePath,
+		Message:   "trusted baseline restored after stable delete drift",
+		At:        time.Now().UTC(),
+		Data: map[string]string{
+			"agentId":   agentID,
+			"reason":    reason,
+			"result":    "restored",
+			"stateFile": cfg.StateFile,
+		},
+	})
+
+	return nil
 }
 func (s *Service) Run(ctx context.Context, cfg config.AppConfig) error {
 	if s.backupSvc == nil {
@@ -198,17 +401,14 @@ func (s *Service) Run(ctx context.Context, cfg config.AppConfig) error {
 }
 
 func (s *Service) scanOnce(ctx context.Context, cfg config.AppConfig) error {
-	if isMonitoringPaused(cfg) {
-		return nil
-	}
 
 	manifest, err := backup.LoadManifest(cfg.StateFile)
 	if err != nil {
 		return err
 	}
 
-	candidateTargets := candidateTargetSet(manifest)
 	startupProtectUntil := loadStartupProtectionUntil(cfg)
+	now := time.Now().UTC()
 
 	for _, snapshot := range manifest.TrustedTargets {
 		effectiveAgentID := snapshot.AgentID
@@ -216,32 +416,18 @@ func (s *Service) scanOnce(ctx context.Context, cfg config.AppConfig) error {
 			effectiveAgentID = cfg.AgentID
 		}
 
-		if snapshotMatchesCandidate(snapshot, candidateTargets) {
-			if s.logger != nil {
-				s.logger.Info(
-					"restore deferred due to candidate snapshot",
-					"agent", effectiveAgentID,
-					"target", snapshot.Name,
-					"targetKey", snapshot.TargetKey,
-					"kind", snapshot.Kind,
-					"path", snapshot.SourcePath,
-					"message", "candidate exists for target, drift restore temporarily deferred",
-				)
-			}
-			continue
-		}
-
 		if startupRestoreSuppressed(startupProtectUntil, snapshot) {
+			s.clearPendingDrift(snapshot)
 			if s.logger != nil {
 				s.logger.Info(
-					"restore deferred due to startup protection window",
+					"candidate creation deferred due to startup protection window",
 					"agent", effectiveAgentID,
 					"target", snapshot.Name,
 					"targetKey", snapshot.TargetKey,
 					"kind", snapshot.Kind,
 					"path", snapshot.SourcePath,
 					"until", startupProtectUntil.Format(time.RFC3339),
-					"message", "OpenClaw startup protection window active, restore temporarily deferred",
+					"message", "OpenClaw startup protection window active, drift verification temporarily deferred",
 				)
 			}
 			continue
@@ -252,122 +438,73 @@ func (s *Service) scanOnce(ctx context.Context, cfg config.AppConfig) error {
 			return fmt.Errorf("compare target %q at %q: %w", snapshot.Name, snapshot.SourcePath, err)
 		}
 		if !drift {
+			s.clearPendingDrift(snapshot)
 			continue
 		}
 
-		if s.hasActiveLease(snapshot, effectiveAgentID) {
-			if s.logger != nil {
-				s.logger.Info(
-					"drift detected but skipped due to active lease",
-					"agent", effectiveAgentID,
-					"target", snapshot.Name,
-					"targetKey", snapshot.TargetKey,
-					"kind", snapshot.Kind,
-					"path", snapshot.SourcePath,
-					"reason", reason,
-					"message", "active lease exists, restore deferred",
-				)
-			}
-			continue
+		signature, err := currentProtectedSignature(snapshot)
+		if err != nil {
+			return fmt.Errorf("calculate drift signature for %q at %q: %w", snapshot.Name, snapshot.SourcePath, err)
 		}
 
-		driftEvent := protocol.Event{
-			Type:      protocol.EventDriftDetected,
-			AgentID:   effectiveAgentID,
-			Target:    snapshot.Name,
-			TargetKey: snapshot.TargetKey,
-			Kind:      snapshot.Kind,
-			Path:      snapshot.SourcePath,
-			Message:   reason,
-			At:        time.Now().UTC(),
-			Data: map[string]string{
-				"agentId":      effectiveAgentID,
-				"reason":       reason,
-				"stateFile":    cfg.StateFile,
-				"baselineSha":  snapshot.SHA256,
-				"baselineSize": fmt.Sprintf("%d", snapshot.Size),
-			},
-		}
-		s.emit(ctx, cfg, driftEvent)
+		pending, changed := s.upsertPendingDrift(snapshot, reason, signature, now)
+		stableUntil := pending.LastChanged.Add(time.Duration(cfg.DriftStableSeconds) * time.Second)
 
-		shouldRestore := (reason == "deleted" && cfg.RestoreOnDelete) || (reason != "deleted" && cfg.RestoreOnChange)
-		if !shouldRestore {
-			if s.logger != nil {
-				s.logger.Info(
-					"drift detected but restore disabled by config",
-					"agent", effectiveAgentID,
-					"target", snapshot.Name,
-					"targetKey", snapshot.TargetKey,
-					"kind", snapshot.Kind,
-					"path", snapshot.SourcePath,
-					"reason", reason,
-					"restoreOnDelete", cfg.RestoreOnDelete,
-					"restoreOnChange", cfg.RestoreOnChange,
-				)
-			}
-			continue
-		}
-
-		if err := s.backupSvc.Restore(snapshot); err != nil {
+		if changed {
 			s.emit(ctx, cfg, protocol.Event{
-				Type:      protocol.EventRestoreFailed,
+				Type:      protocol.EventDriftDetected,
 				AgentID:   effectiveAgentID,
 				Target:    snapshot.Name,
 				TargetKey: snapshot.TargetKey,
 				Kind:      snapshot.Kind,
 				Path:      snapshot.SourcePath,
-				Message:   err.Error(),
-				At:        time.Now().UTC(),
+				Message:   fmt.Sprintf("protected file changed; waiting %d seconds for stabilization before candidate verification", cfg.DriftStableSeconds),
+				At:        now,
 				Data: map[string]string{
-					"agentId":   effectiveAgentID,
-					"reason":    reason,
-					"result":    "failed",
-					"error":     err.Error(),
-					"stateFile": cfg.StateFile,
+					"agentId":       effectiveAgentID,
+					"reason":        reason,
+					"stateFile":     cfg.StateFile,
+					"baselineSha":   snapshot.SHA256,
+					"baselineSize":  fmt.Sprintf("%d", snapshot.Size),
+					"stage":         "stabilizing",
+					"stableSeconds": fmt.Sprintf("%d", cfg.DriftStableSeconds),
+					"stableUntil":   stableUntil.Format(time.RFC3339Nano),
 				},
 			})
+		}
+
+		if now.Before(stableUntil) {
 			continue
 		}
 
-		s.emit(ctx, cfg, protocol.Event{
-			Type:      protocol.EventRestoreCompleted,
-			AgentID:   effectiveAgentID,
-			Target:    snapshot.Name,
-			TargetKey: snapshot.TargetKey,
-			Kind:      snapshot.Kind,
-			Path:      snapshot.SourcePath,
-			Message:   "baseline restored",
-			At:        time.Now().UTC(),
-			Data: map[string]string{
-				"agentId":   effectiveAgentID,
-				"reason":    reason,
-				"result":    "restored",
-				"stateFile": cfg.StateFile,
-			},
-		})
+		if pending.CandidateSignature == signature {
+			continue
+		}
+
+		if reason == "deleted" {
+			if err := s.restoreDeletedTarget(ctx, cfg, snapshot, effectiveAgentID, reason); err == nil {
+				pending.CandidateSignature = signature
+			}
+			continue
+		}
+
+		matchesCandidate, err := currentMatchesCandidate(manifest, snapshot)
+		if err != nil {
+			return fmt.Errorf("compare current file with candidate for %q failed: %w", snapshot.TargetKeyOrName(), err)
+		}
+		if matchesCandidate {
+			pending.CandidateSignature = signature
+			continue
+		}
+
+		if err := s.createCandidateFromCurrent(ctx, cfg, snapshot, effectiveAgentID, reason); err != nil {
+			return err
+		}
+
+		pending.CandidateSignature = signature
 	}
 
 	return nil
-}
-
-func (s *Service) hasActiveLease(snapshot backup.Snapshot, agentID string) bool {
-	if s.leaseInspector == nil {
-		return false
-	}
-
-	if snapshot.SourcePath != "" && s.leaseInspector.HasActiveLease("", snapshot.SourcePath, agentID) {
-		return true
-	}
-
-	if snapshot.TargetKey != "" && s.leaseInspector.HasActiveLease(snapshot.TargetKey, "", agentID) {
-		return true
-	}
-
-	if snapshot.Name != "" && s.leaseInspector.HasActiveLease(snapshot.Name, "", agentID) {
-		return true
-	}
-
-	return false
 }
 
 func compareToBaseline(snapshot backup.Snapshot) (bool, string, error) {

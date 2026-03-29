@@ -4,21 +4,20 @@
 
 ## 核心能力
 
-- 对关键配置文件进行**受保护写入**
-- 为关键配置建立**基线备份**与恢复能力
-- 通过 detector 管理 guard **生命周期**
-- 支持 **Telegram、飞书、企业微信** 等通知通道
-- 提供轻量级 **Windows 托盘 / 控制面板**
+- **漂移监控**：持续轮询受保护配置文件，与基线比对检测未授权修改
+- **基线备份与恢复**：自动建立受保护文件的基线快照，支持一键恢复到受信任状态
+- **Candidate 机制**：漂移稳定 5 秒后自动进入 candidate 状态，由 doctor 流程验证并通过 promote/rollback 处置
+- **多通道通知**：支持 **Telegram、飞书、企业微信** 推送 candidate、异常、恢复等关键事件
+- **轻量托盘控制面板**：Windows 系统托盘程序，支持机器人绑定配置和状态查看
 
 ## 主要组件
 
 | 组件 | 说明 |
 |------|------|
-| `guard` | 核心守护进程，负责 lease、受保护写入、基线刷新、漂移恢复 |
+| `guard` | 核心守护进程，负责漂移监控、基线恢复、candidate 生命周期管理 |
 | `guard-detector` | 检测 OpenClaw 运行状态，并管理 guard 生命周期 |
 | `guard-ui` | 轻量级 Windows 控制面板 / 托盘程序 |
 | `tools/wecom-bridge` | 企业微信桥接辅助工具 |
-| `skills/openclaw-guard-kit` | 安装到 OpenClaw 的共享技能 |
 
 ## 系统要求
 
@@ -42,9 +41,7 @@ powershell -ExecutionPolicy Bypass -File .\installer\install.ps1
 2. 解压到临时目录
 3. 调用 `installer/install-package.ps1`
 4. 安装程序文件到本地安装目录
-5. 安装共享技能到 OpenClaw
-6. 更新 workspace 规则
-7. 注册并启动 guard-detector
+5. 注册并启动 guard-detector
 
 **默认安装目录：** `%USERPROFILE%\.openclaw-guard-kit`
 
@@ -70,8 +67,7 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\i
 2. 解压到临时目录
 3. 调用 `installer/update-from-dir.ps1`
 4. 刷新安装目录中的资源
-5. 刷新共享技能与 workspace 规则
-6. 重启 detector
+5. 重启 detector
 
 ## 本地开发
 
@@ -84,11 +80,19 @@ powershell -ExecutionPolicy Bypass -File .\packaging\package.ps1 -Version v0.1.0
 
 打包脚本会生成用于 GitHub Releases 的发布 zip。
 
-## 受保护写入流程
+## 核心工作流程
 
 ```
-request-write → lease granted → modify → complete-write / fail-write
+watch (轮询) → drift detected → stable 5s → candidate → doctor → promote / rollback
 ```
+
+Guard 不介入 OpenClaw 的操作流程，只监控受保护文件的变化并提供基线恢复能力。
+
+## 受保护文件
+
+- `~/.openclaw/openclaw.json`
+- `~/.openclaw/agents/<agentId>/agent/auth-profiles.json`
+- `~/.openclaw/agents/<agentId>/agent/models.json`
 
 ## 文档
 

@@ -26,21 +26,6 @@ func (c *PipeClient) Request(context.Context, protocol.Message) (protocol.Messag
 	return protocol.Message{}, fmt.Errorf("named pipe client is only supported on Windows")
 }
 
-func (c *PipeClient) RequestWrite(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
-	msg.Type = protocol.MessageWriteRequest
-	return c.Request(ctx, msg)
-}
-
-func (c *PipeClient) CompleteWrite(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
-	msg.Type = protocol.MessageWriteCompleted
-	return c.Request(ctx, msg)
-}
-
-func (c *PipeClient) FailWrite(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
-	msg.Type = protocol.MessageWriteFailed
-	return c.Request(ctx, msg)
-}
-
 func (c *PipeClient) Status(ctx context.Context) (protocol.Message, error) {
 	return c.Request(ctx, protocol.Message{
 		Type: protocol.TypeGuardStatusRequest,
