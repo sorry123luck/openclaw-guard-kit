@@ -461,7 +461,3 @@ func getTenantAccessToken(ctx context.Context, appID, appSecret string) (string,
 
 	return token, nil
 }
-
-func init() {
-	RegisterNotifier(FeishuNotifier{})
-}

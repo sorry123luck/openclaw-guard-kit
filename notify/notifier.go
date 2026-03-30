@@ -105,44 +105,6 @@ func (n *LogNotifier) Notify(_ context.Context, e protocol.Event) error {
 	return nil
 }
 
-type ConsoleNotifier struct{}
-
-func (ConsoleNotifier) Notify(_ context.Context, e protocol.Event) error {
-	if isQuietEventType(e.Type) {
-		return nil
-	}
-	log.Printf("notify: %+v", e)
-	return nil
-}
-
-var notifiers []Notifier
-
-func RegisterNotifier(n Notifier) {
-	if n == nil {
-		return
-	}
-	notifiers = append(notifiers, n)
-}
-
-func Broadcast(ctx context.Context, e protocol.Event) error {
-	if isQuietEventType(e.Type) {
-		return nil
-	}
-	for _, n := range notifiers {
-		if n == nil {
-			continue
-		}
-		if err := n.Notify(ctx, e); err != nil {
-			log.Printf("notify error: %v", err)
-		}
-	}
-	return nil
-}
-
-func init() {
-	RegisterNotifier(ConsoleNotifier{})
-}
-
 func isQuietEventType(t string) bool {
 	switch t {
 	case protocol.TypeGuardStatusRequest,

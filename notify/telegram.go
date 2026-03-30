@@ -522,8 +522,3 @@ func SendTelegramMessage(token string, chatID int64, text string) (bool, string)
 
 	return true, ""
 }
-
-// Register the notifier
-func init() {
-	RegisterNotifier(TelegramNotifier{})
-}

@@ -1,108 +1,174 @@
 # OpenClaw Guard Kit
 
-面向 Windows 的 OpenClaw 守护与恢复工具集。
+OpenClaw Guard Kit 是一个运行在 Windows 上的 **OpenClaw 外部守护与恢复工具**。
 
-## 核心能力
+它**不会修改 OpenClaw 源码**，而是以独立程序的方式运行，主要解决下面几件事：
 
-- **漂移监控**：持续轮询受保护配置文件，与基线比对检测未授权修改
-- **基线备份与恢复**：自动建立受保护文件的基线快照，支持一键恢复到受信任状态
-- **Candidate 机制**：漂移稳定 5 秒后自动进入 candidate 状态，由 doctor 流程验证并通过 promote/rollback 处置
-- **多通道通知**：支持 **Telegram、飞书、企业微信** 推送 candidate、异常、恢复等关键事件
-- **轻量托盘控制面板**：Windows 系统托盘程序，支持机器人绑定配置和状态查看
+- 检测 OpenClaw 当前是否在线
+- 在 OpenClaw 在线时自动拉起守护程序和控制面板
+- 监控关键配置文件是否发生异常变更
+- 在发现可疑配置变动后执行审查、诊断、恢复或回退
+- 通过 Telegram、飞书、企业微信发送通知
+- 允许已绑定用户远程启动或重启 OpenClaw
 
-## 主要组件
+---
 
-| 组件 | 说明 |
-|------|------|
-| `guard` | 核心守护进程，负责漂移监控、基线恢复、candidate 生命周期管理 |
-| `guard-detector` | 检测 OpenClaw 运行状态，并管理 guard 生命周期 |
-| `guard-ui` | 轻量级 Windows 控制面板 / 托盘程序 |
-| `tools/wecom-bridge` | 企业微信桥接辅助工具 |
+# 项目定位
 
-## 系统要求
+本项目当前主线定位为：
 
-- Windows
-- 已正确安装并可运行的 OpenClaw
-- PowerShell 5.1 或更高版本
-- 能访问 GitHub Releases
-- Go 仅在本地源码开发和发布打包时需要
+- **guard-detector.exe**：负责生命周期监控
+- **guard.exe**：负责配置保护、候选审查、doctor 诊断、恢复/回退
+- **guard-ui.exe**：负责本地控制面板、托盘入口、机器人绑定
+- **机器人通道**：负责通知与远程恢复
 
-## 安装
+它是一个**外部守护工具**，不是对 OpenClaw 的深度内部改造。
 
-### 推荐方式：基于 Release 的安装
+---
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\installer\install.ps1
-```
+# 当前主线能力
 
-**默认流程：**
+当前版本已经包含以下主线功能：
 
-1. 从 GitHub Releases 下载最新发布包
-2. 解压到临时目录
-3. 调用 `installer/install-package.ps1`
-4. 安装程序文件到本地安装目录
-5. 注册并启动 guard-detector
+## 1. 生命周期监控
+detector 会持续检测 OpenClaw 是否在线。
 
-**默认安装目录：** `%USERPROFILE%\.openclaw-guard-kit`
+当 OpenClaw 在线时：
+- 自动确保 `guard.exe` 正常运行
+- 自动确保 `guard-ui.exe` 正常运行
 
-### 自定义安装目录
+当 OpenClaw 离线达到确认条件后：
+- 自动停止 `guard-ui.exe`
+- 自动停止 `guard.exe`
+- 发送离线确认通知
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\installer\install.ps1 `
-  -InstallDir "$env:USERPROFILE\.openclaw-guard-kit-test" `
-  -OpenClawRoot "$env:USERPROFILE\.openclaw"
-```
+此外，detector 还支持：
+- 启动保护窗口
+- 过渡保护窗口
+- 远程启动后的快速探测窗口
+- detector 自身退出状态
+- gateway 端口自动发现
+- gateway 端口本地缓存复用
 
-## 升级
+---
 
-运行已安装目录中的升级脚本：
+## 2. 外部配置保护
+guard 会监控 OpenClaw 关键配置文件。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\installer\update.ps1"
-```
+当检测到配置变化时，流程大致为：
+1. 等待文件变更稳定
+2. 生成 candidate snapshot
+3. 执行 review / health / doctor 流程
+4. 判断是否可信、是否需要恢复、是否需要回退、是否需要标记 bad
 
-**默认流程：**
+也就是说，guard 不只是简单“发现文件变了”，而是会继续判断：
+- 这是正常修改
+- 这是可疑修改
+- 这是破坏性修改
+- 是否需要自动恢复
 
-1. 从 GitHub Releases 下载最新发布包
-2. 解压到临时目录
-3. 调用 `installer/update-from-dir.ps1`
-4. 刷新安装目录中的资源
-5. 重启 detector
+---
 
-## 本地开发
+## 3. 通知通道
+当前支持以下机器人通道：
 
-本地源码开发时可执行：
+- Telegram
+- 飞书
+- 企业微信
 
-```powershell
-go build ./...
-powershell -ExecutionPolicy Bypass -File .\packaging\package.ps1 -Version v0.1.0-test
-```
+每个已绑定通道都可以分别控制：
+- 是否接收通知
+- 是否允许远程命令
 
-打包脚本会生成用于 GitHub Releases 的发布 zip。
+---
 
-## 核心工作流程
+## 4. 远程恢复
+已绑定且开启远程命令的用户，可以通过机器人发送命令，例如：
 
-```
-watch (轮询) → drift detected → stable 5s → candidate → doctor → promote / rollback
-```
+- `启动openclaw`
+- `重启openclaw`
 
-Guard 不介入 OpenClaw 的操作流程，只监控受保护文件的变化并提供基线恢复能力。
+detector 收到后会：
+- 校验发送者是否已绑定
+- 校验该绑定是否允许远程命令
+- 执行启动或重启
+- 进入快速探测窗口
+- 更快确认 OpenClaw 是否恢复在线
+- 返回成功、失败或建议重试的信息
 
-## 受保护文件
+如果首次冷启动失败，系统会提示可再次尝试启动。
 
-- `~/.openclaw/openclaw.json`
-- `~/.openclaw/agents/<agentId>/agent/auth-profiles.json`
-- `~/.openclaw/agents/<agentId>/agent/models.json`
+---
 
-## 文档
+# 程序结构
 
-- [COMMANDS.md](COMMANDS.md)
-- [docs/install.md](docs/install.md)
-- [docs/update.md](docs/update.md)
-- [docs/uninstall.md](docs/uninstall.md)
-- [docs/troubleshoot.md](docs/troubleshoot.md)
-- [docs/releasing.md](docs/releasing.md)
+## detector
+目录：`cmd/guard-detector`
 
-## 许可证
+职责：
+- 检测 OpenClaw 在线 / 离线状态
+- 自动发现 gateway 端口并缓存
+- 拉起 / 停止 guard 和 UI
+- 发送生命周期通知
+- 处理远程启动与重启命令
+- 输出 detector 状态文件
 
-MIT
+---
+
+## guard
+目录：`cmd/guard`
+
+职责：
+- 准备 trusted baseline
+- 监控受保护目标
+- 生成 candidate snapshot
+- 执行 review / doctor / restore / rollback 流程
+- 提供 CLI 操作入口
+- 提供 UI 所需的绑定与凭证命令
+
+---
+
+## UI
+目录：`cmd/guard-ui`
+
+职责：
+- 托盘入口
+- 显示 detector / guard / gateway 状态
+- 管理 Telegram / 飞书 / 企业微信凭证
+- 管理机器人绑定
+- 保存通知开关与远程命令开关
+- 发送测试消息
+
+当前 UI 是**轻量控制面板**，不是复杂的后台管理系统。
+
+---
+
+## review
+目录：`internal/review`
+
+职责：
+- 健康检查
+- doctor 输出分类
+- rollback / self-heal / ignore 决策
+- review 状态输出
+
+---
+
+## notify
+目录：`notify`
+
+职责：
+- 凭证存储
+- 绑定存储
+- 通道消息发送
+- pairing 监听
+- 事件文案生成
+
+---
+
+# 运行时文件
+
+程序运行后，会在 OpenClaw 根目录下写入运行状态文件：
+
+```text
+<OpenClawRoot>\.guard-state\

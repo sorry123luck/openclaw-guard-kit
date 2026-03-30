@@ -103,8 +103,7 @@ type Detector struct {
 	lastRemoteCommandAt  time.Time
 	fastProbeMu          sync.Mutex
 	fastProbeUntil       time.Time
-	shutdownRequested    bool
-	shutdownMessage      string
+	shutdownRequested bool
 }
 
 type detectorStatusFile struct {
@@ -161,7 +160,6 @@ func (d *Detector) beginShutdown(message string) {
 	}
 
 	d.shutdownRequested = true
-	d.shutdownMessage = message
 	d.state = DetStateExiting
 	d.lastNotifyType = "detector.exiting"
 	d.lastNotifyMessage = message
@@ -1352,12 +1350,6 @@ func (d *Detector) detectorStateString() string {
 	}
 }
 
-func (d *Detector) logf(format string, args ...interface{}) {
-	if d.logger == nil {
-		return
-	}
-	d.logger.Printf(format, args...)
-}
 func (d *Detector) gatewayStateString() string {
 	switch d.lastProbe {
 	case ProbeOnline:
@@ -1455,24 +1447,6 @@ func (d *Detector) clearStartupProtectionWindow() {
 		return
 	}
 	_ = os.Remove(path)
-}
-
-func (d *Detector) readStartupProtectionUntil() time.Time {
-	path := d.startupProtectFilePath()
-	if path == "" {
-		return time.Time{}
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return time.Time{}
-	}
-
-	var payload startupProtectFile
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return time.Time{}
-	}
-	return payload.Until.UTC()
 }
 
 func (d *Detector) probeIntervalSeconds() int {

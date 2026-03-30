@@ -13,22 +13,17 @@ function Write-Step {
         [string]$English,
         [string]$Chinese = ""
     )
-
     if ([string]::IsNullOrWhiteSpace($Chinese)) {
         Write-Host $English
-        return
     }
-
-    Write-Host "$English ($Chinese)"
+    else {
+        Write-Host "$English ($Chinese)"
+    }
 }
 
 function Ensure-Directory {
     param([string]$Path)
-
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        return
-    }
-
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
     }
@@ -39,7 +34,6 @@ function Resolve-ExistingPath {
         [string]$Path,
         [string]$Label
     )
-
     try {
         return (Resolve-Path -LiteralPath $Path).Path
     }
@@ -50,31 +44,27 @@ function Resolve-ExistingPath {
 
 function Read-JsonFile {
     param([string]$Path)
-
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
     $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
     if ([string]::IsNullOrWhiteSpace($raw)) {
         return $null
     }
-
     return ($raw | ConvertFrom-Json)
 }
 
-
-
 function Get-OpenClawConfigPath {
     param([string]$Root)
-
     $configPath = Join-Path $Root "openclaw.json"
     if (-not (Test-Path -LiteralPath $configPath)) {
         throw "OpenClaw config file not found: $configPath"
     }
-
     return (Resolve-Path -LiteralPath $configPath).Path
 }
 
 function Get-DefaultAgentId {
     param($Config)
-
     if ($null -ne $Config -and
         $null -ne $Config.agents -and
         $null -ne $Config.agents.list -and
@@ -82,102 +72,44 @@ function Get-DefaultAgentId {
         -not [string]::IsNullOrWhiteSpace($Config.agents.list[0].id)) {
         return [string]$Config.agents.list[0].id
     }
-
     return "main"
 }
 
-
-
-function Copy-DirectoryContent {
-    param(
-        [string]$SourceDir,
-        [string]$DestinationDir
-    )
-
-    Ensure-Directory $DestinationDir
-
-    Get-ChildItem -LiteralPath $DestinationDir -Force -ErrorAction SilentlyContinue |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-    Get-ChildItem -LiteralPath $SourceDir -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $DestinationDir -Recurse -Force
-    }
-}
-
-function Set-ManagedBlock {
-    param(
-        [string]$FilePath,
-        [string]$BeginMarker,
-        [string]$EndMarker,
-        [string]$Body
-    )
-
-    Ensure-Directory (Split-Path -Path $FilePath -Parent)
-
-    $trimmedBody = $Body.TrimEnd("`r", "`n")
-    $block = $BeginMarker + "`r`n" + $trimmedBody + "`r`n" + $EndMarker
-
-    $current = ""
-    if (Test-Path -LiteralPath $FilePath) {
-        $current = Get-Content -LiteralPath $FilePath -Raw -Encoding UTF8
-    }
-
-    $pattern = [regex]::Escape($BeginMarker) + ".*?" + [regex]::Escape($EndMarker)
-
-    if ([regex]::IsMatch($current, $pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
-        $updated = [regex]::Replace(
-            $current,
-            $pattern,
-            $block,
-            [System.Text.RegularExpressions.RegexOptions]::Singleline
-        )
-    }
-    else {
-        $trimmedCurrent = $current.TrimEnd("`r", "`n")
-        if ([string]::IsNullOrWhiteSpace($trimmedCurrent)) {
-            $updated = $block + "`r`n"
-        }
-        else {
-            $updated = $trimmedCurrent + "`r`n`r`n" + $block + "`r`n"
-        }
-    }
-
-    Set-Content -LiteralPath $FilePath -Value $updated -Encoding UTF8
-}
-
-function Render-Template {
-    param(
-        [string]$TemplateText,
-        [hashtable]$Values
-    )
-
-    $result = $TemplateText
-    foreach ($key in $Values.Keys) {
-        $token = "{{" + $key + "}}"
-        $result = $result.Replace($token, [string]$Values[$key])
-    }
-
-    return $result
-}
 function Get-DetectorAutoStartName {
     return "OpenClaw Guard Detector"
+}
+
+function Get-OfflineFlagPath {
+    param([string]$Root)
+    return (Join-Path $Root ".offline")
+}
+
+function Clear-OfflineFlag {
+    param([string]$Root)
+    $flagPath = Get-OfflineFlagPath -Root $Root
+    if (Test-Path -LiteralPath $flagPath) {
+        Remove-Item -LiteralPath $flagPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-DetectorCommandLine {
     param(
         [string]$DetectorExe,
-        [string]$OpenClawRoot
+        [string]$OpenClawRoot,
+        [string]$AgentID
     )
 
     $quotedExe = '"' + $DetectorExe + '"'
     $quotedRoot = '"' + $OpenClawRoot + '"'
-    return "$quotedExe watch --root $quotedRoot --log-level info"
+    $quotedAgent = '"' + $AgentID + '"'
+    return "$quotedExe --root $quotedRoot --agent $quotedAgent --log-level info"
 }
 
 function Register-DetectorAutoStart {
     param(
         [string]$DetectorExe,
-        [string]$OpenClawRoot
+        [string]$OpenClawRoot,
+        [string]$AgentID
     )
 
     $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -185,9 +117,8 @@ function Register-DetectorAutoStart {
         New-Item -Path $runKey -Force | Out-Null
     }
 
-    $commandLine = Get-DetectorCommandLine -DetectorExe $DetectorExe -OpenClawRoot $OpenClawRoot
+    $commandLine = Get-DetectorCommandLine -DetectorExe $DetectorExe -OpenClawRoot $OpenClawRoot -AgentID $AgentID
     Set-ItemProperty -Path $runKey -Name (Get-DetectorAutoStartName) -Value $commandLine
-
     return $commandLine
 }
 
@@ -210,20 +141,15 @@ function Test-DetectorRunning {
         $procExe = [string]$proc.ExecutablePath
         $cmd = [string]$proc.CommandLine
 
-        if ([string]::IsNullOrWhiteSpace($procExe)) {
-            continue
-        }
-
-        if ($procExe.ToLowerInvariant() -ne $fullExe) {
-            continue
-        }
+        if ([string]::IsNullOrWhiteSpace($procExe)) { continue }
+        if ($procExe.ToLowerInvariant() -ne $fullExe) { continue }
 
         if ([string]::IsNullOrWhiteSpace($cmd)) {
             return $true
         }
 
         $cmdLower = $cmd.ToLowerInvariant()
-        if ($cmdLower.Contains("watch") -and $cmdLower.Contains($fullRoot)) {
+        if ($cmdLower.Contains($fullRoot)) {
             return $true
         }
     }
@@ -231,239 +157,196 @@ function Test-DetectorRunning {
     return $false
 }
 
-function Start-DetectorIfNeeded {
+function Stop-ProcessByExecutablePath {
+    param([string]$ExecutablePath)
+
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { return }
+    if (-not (Test-Path -LiteralPath $ExecutablePath)) { return }
+
+    $fullExe = [System.IO.Path]::GetFullPath($ExecutablePath).ToLowerInvariant()
+    $exeName = [System.IO.Path]::GetFileName($ExecutablePath).Replace("'", "''")
+
+    $procs = Get-CimInstance Win32_Process -Filter "Name = '$exeName'" -ErrorAction SilentlyContinue
+    foreach ($proc in @($procs)) {
+        $procExe = [string]$proc.ExecutablePath
+        if ([string]::IsNullOrWhiteSpace($procExe)) { continue }
+        if ($procExe.ToLowerInvariant() -eq $fullExe) {
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Stop-InstalledChain {
     param(
-        [string]$DetectorExe,
+        [string]$InstallDir,
         [string]$OpenClawRoot
     )
 
-    $commandLine = Get-DetectorCommandLine -DetectorExe $DetectorExe -OpenClawRoot $OpenClawRoot
+    $manifestPath = Join-Path $InstallDir "openclaw-guard-kit-install-manifest.json"
+    $manifest = Read-JsonFile -Path $manifestPath
+
+    if ($null -ne $manifest -and $null -ne $manifest.artifacts) {
+        Stop-ProcessByExecutablePath -ExecutablePath $manifest.artifacts.guardUiExe
+        Stop-ProcessByExecutablePath -ExecutablePath $manifest.artifacts.guardExe
+        Stop-ProcessByExecutablePath -ExecutablePath $manifest.artifacts.guardDetectorExe
+        return
+    }
+
+    Stop-ProcessByExecutablePath -ExecutablePath (Join-Path $InstallDir "guard-ui.exe")
+    Stop-ProcessByExecutablePath -ExecutablePath (Join-Path $InstallDir "guard.exe")
+    Stop-ProcessByExecutablePath -ExecutablePath (Join-Path $InstallDir "guard-detector.exe")
+}
+
+function Start-DetectorIfNeeded {
+    param(
+        [string]$DetectorExe,
+        [string]$OpenClawRoot,
+        [string]$AgentID
+    )
 
     if (Test-DetectorRunning -DetectorExe $DetectorExe -OpenClawRoot $OpenClawRoot) {
-        return [pscustomobject]@{
-            Running     = $true
-            StartedNow  = $false
-            CommandLine = $commandLine
-            Message     = "Detector already running."
-        }
+        return $false
     }
 
-    Start-Process -FilePath $DetectorExe -ArgumentList @("watch", "--root", $OpenClawRoot, "--log-level", "info") -WindowStyle Hidden | Out-Null
+    Start-Process -FilePath $DetectorExe -ArgumentList @(
+        "--root", $OpenClawRoot,
+        "--agent", $AgentID,
+        "--log-level", "info"
+    ) -WindowStyle Hidden | Out-Null
+
     Start-Sleep -Seconds 2
-
-    $running = Test-DetectorRunning -DetectorExe $DetectorExe -OpenClawRoot $OpenClawRoot
-
-    return [pscustomobject]@{
-        Running     = $running
-        StartedNow  = $true
-        CommandLine = $commandLine
-        Message     = $(if ($running) { "Detector started." } else { "Detector start requested." })
-    }
+    return (Test-DetectorRunning -DetectorExe $DetectorExe -OpenClawRoot $OpenClawRoot)
 }
-function Invoke-GoBuild {
+
+function Sync-Directory {
     param(
-        [string]$Root,
-        [string]$OutputPath,
-        [string]$PackagePath
+        [string]$SourceDir,
+        [string]$DestinationDir
     )
 
-    Push-Location $Root
-    try {
-        & go build -o $OutputPath $PackagePath
-        if ($LASTEXITCODE -ne 0) {
-            throw "go build failed for $PackagePath"
-        }
-    }
-    finally {
-        Pop-Location
+    Ensure-Directory $DestinationDir
+
+    Get-ChildItem -LiteralPath $DestinationDir -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+    Get-ChildItem -LiteralPath $SourceDir -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $DestinationDir -Recurse -Force
     }
 }
 
-function Ensure-GuardArtifact {
-    param(
-        [string]$Root,
-        [string]$InstallRoot,
-        [string]$FileName,
-        [string]$PackagePath,
-        [bool]$Rebuild
-    )
-
-    $repoArtifact = Join-Path $Root $FileName
-    $destination = Join-Path $InstallRoot $FileName
-
-    if ((Test-Path -LiteralPath $repoArtifact) -and -not $Rebuild) {
-        Copy-Item -LiteralPath $repoArtifact -Destination $destination -Force
-        return $destination
-    }
-
-    $goCmd = Get-Command go -ErrorAction SilentlyContinue
-    if (-not $goCmd) {
-        throw "Go toolchain not found in PATH, and prebuilt artifact is missing: $FileName"
-    }
-
-    Write-Step "Building $FileName..." "正在编译程序文件"
-    Invoke-GoBuild -Root $Root -OutputPath $destination -PackagePath $PackagePath
-    return $destination
-}
-
-function Get-InstallVersion {
-    param([string]$Root)
-
-    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
-    if ($gitCmd) {
-        try {
-            $commit = (& git -C $Root rev-parse --short HEAD 2>$null)
-            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($commit)) {
-                return $commit.Trim()
-            }
-        }
-        catch {
-        }
-    }
-
-    return (Get-Date -Format "yyyyMMdd-HHmmss")
-}
-
-$ProjectDir = Resolve-ExistingPath -Path $ProjectDir -Label "Project directory"
-$OpenClawRoot = Resolve-ExistingPath -Path $OpenClawRoot -Label "OpenClaw root"
+$ProjectDir = Resolve-ExistingPath -Path $ProjectDir -Label "Project dir"
+$InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+$OpenClawRoot = [System.IO.Path]::GetFullPath($OpenClawRoot)
 
 Write-Step "Checking package integrity..." "正在检查程序完整性"
 
-$requiredPaths = @(
-    (Join-Path $ProjectDir "go.mod"),
-    (Join-Path $ProjectDir "cmd\guard\main.go"),
-    (Join-Path $ProjectDir "cmd\guard-detector\main.go"),
-    (Join-Path $ProjectDir "cmd\guard-ui\main.go"),
-    (Join-Path $ProjectDir "templates\AGENTS.append.md"),
-    (Join-Path $ProjectDir "templates\TOOLS.append.md"),
-    (Join-Path $ProjectDir "installer\update.ps1"),
-    (Join-Path $ProjectDir "installer\uninstall.ps1"),
-    (Join-Path $ProjectDir "installer\toggle-detector.ps1"),
-    (Join-Path $ProjectDir "tools\wecom-bridge\index.mjs"),
-    (Join-Path $ProjectDir "tools\wecom-bridge\package.json")
-)
-
-foreach ($requiredPath in $requiredPaths) {
-    if (-not (Test-Path -LiteralPath $requiredPath)) {
-        throw "Required file missing: $requiredPath"
-    }
-}
+$guardExeSource = Resolve-ExistingPath -Path (Join-Path $ProjectDir "guard.exe") -Label "guard.exe"
+$detectorExeSource = Resolve-ExistingPath -Path (Join-Path $ProjectDir "guard-detector.exe") -Label "guard-detector.exe"
+$guardUiExeSource = Resolve-ExistingPath -Path (Join-Path $ProjectDir "guard-ui.exe") -Label "guard-ui.exe"
+$installScriptSource = Resolve-ExistingPath -Path (Join-Path $ProjectDir "installer\install.ps1") -Label "installer\install.ps1"
+$updateScriptSource = Resolve-ExistingPath -Path (Join-Path $ProjectDir "installer\update.ps1") -Label "installer\update.ps1"
+$updateFromDirSource = Resolve-ExistingPath -Path (Join-Path $ProjectDir "installer\update-from-dir.ps1") -Label "installer\update-from-dir.ps1"
+$uninstallScriptSource = Resolve-ExistingPath -Path (Join-Path $ProjectDir "installer\uninstall.ps1") -Label "installer\uninstall.ps1"
+$toggleScriptSource = Resolve-ExistingPath -Path (Join-Path $ProjectDir "installer\toggle-detector.ps1") -Label "installer\toggle-detector.ps1"
+$wecomBridgeSourceDir = Resolve-ExistingPath -Path (Join-Path $ProjectDir "tools\wecom-bridge") -Label "tools\wecom-bridge"
+$wecomBridgeEntry = Resolve-ExistingPath -Path (Join-Path $wecomBridgeSourceDir "index.mjs") -Label "tools\wecom-bridge\index.mjs"
+$wecomBridgePackage = Resolve-ExistingPath -Path (Join-Path $wecomBridgeSourceDir "package.json") -Label "tools\wecom-bridge\package.json"
 
 $guardUiManifestSource = Join-Path $ProjectDir "guard-ui.exe.manifest"
-$wecomBridgeSourceDir = Join-Path $ProjectDir "tools\wecom-bridge"
+if (Test-Path -LiteralPath $guardUiManifestSource) {
+    $guardUiManifestSource = (Resolve-Path -LiteralPath $guardUiManifestSource).Path
+}
+else {
+    $guardUiManifestSource = $null
+}
+
+$packageManifestPath = Join-Path $ProjectDir "installer\package-manifest.json"
+$packageManifest = Read-JsonFile -Path $packageManifestPath
 
 Write-Step "Loading OpenClaw configuration..." "正在识别 OpenClaw 环境"
+$openClawConfigPath = Get-OpenClawConfigPath -Root $OpenClawRoot
+$openClawConfig = Read-JsonFile -Path $openClawConfigPath
+$agentID = Get-DefaultAgentId -Config $openClawConfig
 
-$configPath = Get-OpenClawConfigPath -Root $OpenClawRoot
-$configObject = Read-JsonFile -Path $configPath
-$defaultAgentId = Get-DefaultAgentId -Config $configObject
-$workspaceInfos = Get-WorkspaceInfos -Config $configObject -OpenClawRootPath $OpenClawRoot
-Write-Host ("Detected workspaces: " + (($workspaceInfos | ForEach-Object { $_.Path } | Sort-Object -Unique) -join "; "))
+Write-Step "Stopping old guard chain if needed..." "正在停止旧的守护链"
+Stop-InstalledChain -InstallDir $InstallDir -OpenClawRoot $OpenClawRoot
 
 Write-Step "Preparing install directory..." "正在准备安装目录"
-
 Ensure-Directory $InstallDir
-$logsDir = Join-Path $InstallDir "logs"
-$bundleDir = Join-Path $InstallDir "bundle"
-$bundleTemplatesDir = Join-Path $bundleDir "templates"
-$bundleToolsDir = Join-Path $bundleDir "tools\wecom-bridge"
-$installToolsDir = Join-Path $InstallDir "tools\wecom-bridge"
-$installInstallerDir = Join-Path $InstallDir "installer"
+Ensure-Directory (Join-Path $InstallDir "installer")
+Ensure-Directory (Join-Path $InstallDir "tools")
+Ensure-Directory (Join-Path $InstallDir "logs")
 
-Ensure-Directory $logsDir
-Ensure-Directory $bundleTemplatesDir
-Ensure-Directory $bundleToolsDir
-Ensure-Directory $installToolsDir
-Ensure-Directory $installInstallerDir
+Write-Step "Copying program files..." "正在复制程序文件"
+Copy-Item -LiteralPath $guardExeSource -Destination (Join-Path $InstallDir "guard.exe") -Force
+Copy-Item -LiteralPath $detectorExeSource -Destination (Join-Path $InstallDir "guard-detector.exe") -Force
+Copy-Item -LiteralPath $guardUiExeSource -Destination (Join-Path $InstallDir "guard-ui.exe") -Force
 
-Write-Step "Preparing program files..." "正在准备程序文件"
-
-$guardExe = Ensure-GuardArtifact -Root $ProjectDir -InstallRoot $InstallDir -FileName "guard.exe" -PackagePath ".\cmd\guard" -Rebuild:$ForceRebuild
-$guardDetectorExe = Ensure-GuardArtifact -Root $ProjectDir -InstallRoot $InstallDir -FileName "guard-detector.exe" -PackagePath ".\cmd\guard-detector" -Rebuild:$ForceRebuild
-$guardUiExe = Ensure-GuardArtifact -Root $ProjectDir -InstallRoot $InstallDir -FileName "guard-ui.exe" -PackagePath ".\cmd\guard-ui" -Rebuild:$ForceRebuild
-
-if (Test-Path -LiteralPath $guardUiManifestSource) {
+if ($null -ne $guardUiManifestSource) {
     Copy-Item -LiteralPath $guardUiManifestSource -Destination (Join-Path $InstallDir "guard-ui.exe.manifest") -Force
 }
 
-Write-Step "Staging install resources..." "正在写入安装资源"
+Copy-Item -LiteralPath $installScriptSource -Destination (Join-Path $InstallDir "installer\install.ps1") -Force
+Copy-Item -LiteralPath $updateScriptSource -Destination (Join-Path $InstallDir "installer\update.ps1") -Force
+Copy-Item -LiteralPath $updateFromDirSource -Destination (Join-Path $InstallDir "installer\update-from-dir.ps1") -Force
+Copy-Item -LiteralPath $uninstallScriptSource -Destination (Join-Path $InstallDir "installer\uninstall.ps1") -Force
+Copy-Item -LiteralPath $toggleScriptSource -Destination (Join-Path $InstallDir "installer\toggle-detector.ps1") -Force
 
-Copy-Item -LiteralPath (Join-Path $ProjectDir "templates\AGENTS.append.md") -Destination (Join-Path $bundleTemplatesDir "AGENTS.append.md") -Force
-Copy-Item -LiteralPath (Join-Path $ProjectDir "templates\TOOLS.append.md") -Destination (Join-Path $bundleTemplatesDir "TOOLS.append.md") -Force
-Copy-Item -LiteralPath (Join-Path $ProjectDir "installer\update.ps1") -Destination (Join-Path $installInstallerDir "update.ps1") -Force
-Copy-Item -LiteralPath (Join-Path $ProjectDir "installer\uninstall.ps1") -Destination (Join-Path $installInstallerDir "uninstall.ps1") -Force
-Copy-Item -LiteralPath (Join-Path $ProjectDir "installer\toggle-detector.ps1") -Destination (Join-Path $installInstallerDir "toggle-detector.ps1") -Force
-Copy-DirectoryContent -SourceDir $wecomBridgeSourceDir -DestinationDir $bundleToolsDir
-Copy-DirectoryContent -SourceDir $wecomBridgeSourceDir -DestinationDir $installToolsDir
-
-
-Write-Step "Registering detector auto-start..." "正在注册 detector 自启动"
-$detectorCommandLine = Register-DetectorAutoStart -DetectorExe $guardDetectorExe -OpenClawRoot $OpenClawRoot
-
-Write-Step "Starting detector..." "正在启动守护检测器"
-$detectorStartResult = Start-DetectorIfNeeded -DetectorExe $guardDetectorExe -OpenClawRoot $OpenClawRoot
-Write-Step "Writing install manifest..." "正在写入安装清单"
-
-$installVersion = Get-InstallVersion -Root $ProjectDir
-$manifestPath = Join-Path $InstallDir "openclaw-guard-kit-install-manifest.json"
-
-$manifestObject = [pscustomobject]@{
-    schema         = "openclaw-guard-kit.install.v1"
-    packageName    = "openclaw-guard-kit"
-    version        = $installVersion
-    installedAt    = (Get-Date).ToString("o")
-    installDir     = $InstallDir
-    openClawRoot   = $OpenClawRoot
-    openClawConfig = $configPath
-    defaultAgentId = $defaultAgentId
-    sharedSkillDir = $sharedSkillDir
-    workspaces     = @($workspaceInfos | ForEach-Object { $_.Path })
-    artifacts      = [pscustomobject]@{
-    guardExe         = $guardExe
-    guardDetectorExe = $guardDetectorExe
-    guardUiExe       = $guardUiExe
-    guardUiManifest  = $(if (Test-Path -LiteralPath (Join-Path $InstallDir "guard-ui.exe.manifest")) { Join-Path $InstallDir "guard-ui.exe.manifest" } else { "" })
-    wecomBridgeDir   = $installToolsDir
-    wecomBridgeEntry = (Join-Path $installToolsDir "index.mjs")
-    }
-    bundle         = [pscustomobject]@{
-        templatesDir   = $bundleTemplatesDir
-        skillDir       = $bundleSkillsDir
-        wecomBridgeDir = $bundleToolsDir
-    }
-    installer      = [pscustomobject]@{
-        updateScript         = (Join-Path $installInstallerDir "update.ps1")
-        uninstallScript      = (Join-Path $installInstallerDir "uninstall.ps1")
-        toggleDetectorScript = (Join-Path $installInstallerDir "toggle-detector.ps1")
-    }
-    markers        = [pscustomobject]@{
-        agentsBegin = $agentsBeginMarker
-        agentsEnd   = $agentsEndMarker
-        toolsBegin  = $toolsBeginMarker
-        toolsEnd    = $toolsEndMarker
-    }
-    detector       = [pscustomobject]@{
-    executable          = $guardDetectorExe
-    commandLine         = $detectorCommandLine
-    autoStartName       = (Get-DetectorAutoStartName)
-    autoStartRegistered = $true
-    running             = $detectorStartResult.Running
-    startedNow          = $detectorStartResult.StartedNow
-    message             = $detectorStartResult.Message
-  }
+if (Test-Path -LiteralPath (Join-Path $ProjectDir "README.md")) {
+    Copy-Item -LiteralPath (Join-Path $ProjectDir "README.md") -Destination (Join-Path $InstallDir "README.md") -Force
+}
+if (Test-Path -LiteralPath (Join-Path $ProjectDir "LICENSE")) {
+    Copy-Item -LiteralPath (Join-Path $ProjectDir "LICENSE") -Destination (Join-Path $InstallDir "LICENSE") -Force
 }
 
-$manifestObject | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+Write-Step "Copying WeCom bridge..." "正在复制企业微信桥接工具"
+Sync-Directory -SourceDir $wecomBridgeSourceDir -DestinationDir (Join-Path $InstallDir "tools\wecom-bridge")
 
-Write-Step "Installation completed." "安装完成"
+Write-Step "Registering detector auto start..." "正在注册 detector 自启动"
+$detectorExeInstalled = Join-Path $InstallDir "guard-detector.exe"
+$autoStartCommand = Register-DetectorAutoStart -DetectorExe $detectorExeInstalled -OpenClawRoot $OpenClawRoot -AgentID $agentID
+
+Clear-OfflineFlag -Root $OpenClawRoot
+
+$manifest = [ordered]@{
+    schemaVersion = 2
+    packageName   = if ($null -ne $packageManifest -and -not [string]::IsNullOrWhiteSpace($packageManifest.packageName)) { $packageManifest.packageName } else { "openclaw-guard-kit-windows-x64" }
+    version       = if ($null -ne $packageManifest -and -not [string]::IsNullOrWhiteSpace($packageManifest.version)) { $packageManifest.version } else { "dev" }
+    builtAtUtc    = if ($null -ne $packageManifest -and -not [string]::IsNullOrWhiteSpace($packageManifest.builtAtUtc)) { $packageManifest.builtAtUtc } else { (Get-Date).ToUniversalTime().ToString("o") }
+    installDir    = $InstallDir
+    openClawRoot  = $OpenClawRoot
+    agentId       = $agentID
+    detectorAutoStartName    = (Get-DetectorAutoStartName)
+    detectorAutoStartCommand = $autoStartCommand
+    artifacts = [ordered]@{
+        guardExe         = (Join-Path $InstallDir "guard.exe")
+        guardDetectorExe = (Join-Path $InstallDir "guard-detector.exe")
+        guardUiExe       = (Join-Path $InstallDir "guard-ui.exe")
+        guardUiManifest  = (Join-Path $InstallDir "guard-ui.exe.manifest")
+        wecomBridgeDir   = (Join-Path $InstallDir "tools\wecom-bridge")
+    }
+    installer = [ordered]@{
+        installScript        = (Join-Path $InstallDir "installer\install.ps1")
+        updateScript         = (Join-Path $InstallDir "installer\update.ps1")
+        updateFromDirScript  = (Join-Path $InstallDir "installer\update-from-dir.ps1")
+        uninstallScript      = (Join-Path $InstallDir "installer\uninstall.ps1")
+        toggleDetectorScript = (Join-Path $InstallDir "installer\toggle-detector.ps1")
+    }
+}
+
+$manifestPath = Join-Path $InstallDir "openclaw-guard-kit-install-manifest.json"
+$manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
+Write-Step "Starting detector..." "正在启动 detector"
+$started = Start-DetectorIfNeeded -DetectorExe $detectorExeInstalled -OpenClawRoot $OpenClawRoot -AgentID $agentID
+
+Write-Step "Install completed." "安装完成"
 Write-Host "Install dir: $InstallDir"
-Write-Host "Shared skill dir: $sharedSkillDir"
-Write-Host "Updated workspaces: $($workspaceInfos.Count)"
-Write-Host "Manifest: $manifestPath"
-
-if ($detectorStartResult.Running) {
-    Write-Host "Detector is running."
+Write-Host "OpenClaw root: $OpenClawRoot"
+Write-Host "Agent: $agentID"
+if ($started) {
+    Write-Host "Detector started successfully."
 }
 else {
-    Write-Host "Detector start was requested, but running state could not be confirmed."
+    Write-Host "Detector start requested. Please confirm running state manually if needed."
 }

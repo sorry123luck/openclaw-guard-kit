@@ -2,13 +2,10 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
 	"openclaw-guard-kit/internal/protocol"
-	"openclaw-guard-kit/logging"
 )
 
 const DefaultPipeName = `\\.\pipe\openclaw-guard`
@@ -53,35 +50,6 @@ func ScopePipeName(baseName, scope string) string {
 
 	cleanScope := sanitizePipeSegment(scope)
 	return fmt.Sprintf("%s-%s", baseName, cleanScope)
-}
-
-type MemoryPublisher struct {
-	logger *logging.Logger
-	mu     sync.Mutex
-	events []protocol.Event
-}
-
-func NewMemoryPublisher(logger *logging.Logger) *MemoryPublisher {
-	return &MemoryPublisher{logger: logger}
-}
-
-func (p *MemoryPublisher) Publish(_ context.Context, event protocol.Event) error {
-	p.mu.Lock()
-	p.events = append(p.events, event)
-	p.mu.Unlock()
-
-	raw, _ := json.Marshal(event)
-	p.logger.Debug("gateway published event", "event", string(raw))
-	return nil
-}
-
-func (p *MemoryPublisher) Events() []protocol.Event {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	out := make([]protocol.Event, len(p.events))
-	copy(out, p.events)
-	return out
 }
 
 func sanitizePipeSegment(v string) string {

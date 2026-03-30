@@ -38,19 +38,6 @@ type StatusSnapshot struct {
 	DetectorNotifyType    string
 	DetectorNotifyMessage string
 	DetectorNotifyAt      time.Time
-	CandidateStatus       string
-	CandidateTargets      string
-	HealthStatus          string
-	HealthMessage         string
-	LastHealthCheckAt     time.Time
-	CandidateSince        time.Time
-	DiagnosisStatus       string
-	DiagnosisSummary      string
-	DiagnosisAt           time.Time
-	DoctorLogPath         string
-	RollbackStatus        string
-	RollbackMessage       string
-	RollbackAt            time.Time
 }
 type detectorStatusFile struct {
 	DetectorState     string    `json:"detectorState"`
@@ -62,46 +49,6 @@ type detectorStatusFile struct {
 	LastNotifyType    string    `json:"lastNotifyType,omitempty"`
 	LastNotifyMessage string    `json:"lastNotifyMessage,omitempty"`
 	LastNotifyAt      time.Time `json:"lastNotifyAt,omitempty"`
-}
-type reviewStatusFile struct {
-	CandidateStatus   string    `json:"candidateStatus,omitempty"`
-	CandidateTargets  []string  `json:"candidateTargets,omitempty"`
-	CandidateSince    time.Time `json:"candidateSince,omitempty"`
-	HealthStatus      string    `json:"healthStatus,omitempty"`
-	HealthMessage     string    `json:"healthMessage,omitempty"`
-	LastHealthCheckAt time.Time `json:"lastHealthCheckAt,omitempty"`
-	DiagnosisStatus   string    `json:"diagnosisStatus,omitempty"`
-	DiagnosisSummary  string    `json:"diagnosisSummary,omitempty"`
-	DiagnosisAt       time.Time `json:"diagnosisAt,omitempty"`
-	DoctorLogPath     string    `json:"doctorLogPath,omitempty"`
-	RollbackStatus    string    `json:"rollbackStatus,omitempty"`
-	RollbackMessage   string    `json:"rollbackMessage,omitempty"`
-	RollbackAt        time.Time `json:"rollbackAt,omitempty"`
-}
-
-func (c *GuardCLI) reviewStatusPath() string {
-	if c.RootDir == "" {
-		return ""
-	}
-	return filepath.Join(c.RootDir, ".guard-state", "review-status.json")
-}
-
-func (c *GuardCLI) readReviewStatus() reviewStatusFile {
-	path := c.reviewStatusPath()
-	if path == "" {
-		return reviewStatusFile{}
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return reviewStatusFile{}
-	}
-
-	var s reviewStatusFile
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return reviewStatusFile{}
-	}
-	return s
 }
 func (c *GuardCLI) detectorStatusPath() string {
 	if c.RootDir == "" {
@@ -186,20 +133,6 @@ func (c *GuardCLI) Snapshot(ctx context.Context) StatusSnapshot {
 	snap.DetectorNotifyMessage = strings.TrimSpace(detectorFile.LastNotifyMessage)
 	snap.DetectorNotifyAt = detectorFile.LastNotifyAt
 
-	reviewFile := c.readReviewStatus()
-	snap.CandidateStatus = strings.TrimSpace(reviewFile.CandidateStatus)
-	snap.CandidateTargets = strings.Join(reviewFile.CandidateTargets, ", ")
-	snap.HealthStatus = strings.TrimSpace(reviewFile.HealthStatus)
-	snap.HealthMessage = strings.TrimSpace(reviewFile.HealthMessage)
-	snap.LastHealthCheckAt = reviewFile.LastHealthCheckAt
-	snap.CandidateSince = reviewFile.CandidateSince
-	snap.DiagnosisStatus = strings.TrimSpace(reviewFile.DiagnosisStatus)
-	snap.DiagnosisSummary = strings.TrimSpace(reviewFile.DiagnosisSummary)
-	snap.DiagnosisAt = reviewFile.DiagnosisAt
-	snap.DoctorLogPath = strings.TrimSpace(reviewFile.DoctorLogPath)
-	snap.RollbackStatus = strings.TrimSpace(reviewFile.RollbackStatus)
-	snap.RollbackMessage = strings.TrimSpace(reviewFile.RollbackMessage)
-	snap.RollbackAt = reviewFile.RollbackAt
 	if details, err := c.GuardStatusDetails(ctx); err == nil {
 		if v := strings.TrimSpace(details["guardStatus"]); v != "" {
 			snap.GuardStatus = v
@@ -320,19 +253,6 @@ func extractLogDirFromConfig(configPath string) string {
 
 func (c *GuardCLI) OpenConfigDir() string {
 	return filepath.Join(c.RootDir, ".guard-state")
-}
-func (c *GuardCLI) CandidateStatus(ctx context.Context) (string, error) {
-	return c.run(ctx, "candidate-status", "--root", c.RootDir)
-}
-
-func (c *GuardCLI) PromoteCandidate(ctx context.Context, target string) error {
-	_, err := c.run(ctx, "promote-candidate", "--root", c.RootDir, "--target", strings.TrimSpace(target))
-	return err
-}
-
-func (c *GuardCLI) DiscardCandidate(ctx context.Context, target string) error {
-	_, err := c.run(ctx, "discard-candidate", "--root", c.RootDir, "--target", strings.TrimSpace(target))
-	return err
 }
 
 // CompleteTelegramBinding 完成 Telegram 绑定（软件通知绑定，不绑 Agent）
