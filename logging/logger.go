@@ -1,3 +1,5 @@
+//go:build windows
+
 package logging
 
 import (
@@ -10,12 +12,14 @@ import (
 	"time"
 )
 
+// Logger represents a structured logger.
 type Logger struct {
 	mu   sync.Mutex
 	core *log.Logger
 	file *os.File
 }
 
+// New creates a new Logger that writes to the given log path and standard output.
 func New(logPath string) (*Logger, error) {
 	writers := []io.Writer{os.Stdout}
 	var file *os.File
@@ -37,6 +41,7 @@ func New(logPath string) (*Logger, error) {
 	}, nil
 }
 
+// Close closes the logger's file if it was set.
 func (l *Logger) Close() error {
 	if l.file != nil {
 		return l.file.Close()
@@ -44,10 +49,16 @@ func (l *Logger) Close() error {
 	return nil
 }
 
+// Debug logs a debug message.
 func (l *Logger) Debug(msg string, kv ...any) { l.write("DEBUG", msg, kv...) }
-func (l *Logger) Info(msg string, kv ...any)  { l.write("INFO", msg, kv...) }
+
+// Info logs an info message.
+func (l *Logger) Info(msg string, kv ...any) { l.write("INFO", msg, kv...) }
+
+// Error logs an error message.
 func (l *Logger) Error(msg string, kv ...any) { l.write("ERROR", msg, kv...) }
 
+// write outputs a formatted log line.
 func (l *Logger) write(level, msg string, kv ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -68,4 +79,13 @@ func (l *Logger) write(level, msg string, kv ...any) {
 		line += fmt.Sprintf(" %s=%s", key, value)
 	}
 	l.core.Println(line)
+}
+
+// CoreLogger returns the underlying *log.Logger for use with other packages that expect the standard logger.
+// It returns nil if the receiver is nil.
+func (l *Logger) CoreLogger() *log.Logger {
+	if l == nil {
+		return nil
+	}
+	return l.core
 }

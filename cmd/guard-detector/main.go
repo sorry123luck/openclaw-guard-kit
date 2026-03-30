@@ -42,11 +42,6 @@ func main() {
 	rootDir := fs.String("root", "", "根目录路径")
 	agentID := fs.String("agent", "main", "agent ID")
 	probeInterval := fs.Int("probe-interval", 5, "探测间隔秒数")
-	candidateStable := fs.Int("candidate-stable", 120, "候选快照连续稳定秒数")
-	healthCheckInterval := fs.Int("health-interval", 30, "候选健康检查间隔秒数")
-	healthTimeout := fs.Int("health-timeout", 20, "单次健康检查命令超时秒数")
-	doctorTimeout := fs.Int("doctor-timeout", 60, "doctor 诊断命令超时秒数")
-	doctorDeep := fs.Bool("doctor-deep", false, "候选失败时是否启用 doctor --deep")
 	startupProtect := fs.Int("startup-protect", 20, "OpenClaw 刚上线时的启动保护秒数")
 	transitionGrace := fs.Int("transition-grace", 45, "过渡保护秒数")
 	offlineGrace := fs.Int("offline-grace", 90, "持续离线确认秒数")
@@ -89,23 +84,18 @@ func main() {
 	}
 
 	cfg := DetectorConfig{
-		OpenClawPath:            *openclawPath,
-		RootDir:                 *rootDir,
-		AgentID:                 *agentID,
-		ProbeIntervalSeconds:    *probeInterval,
-		CandidateStableSeconds:  *candidateStable,
-		HealthCheckIntervalSec:  *healthCheckInterval,
-		HealthCommandTimeoutSec: *healthTimeout,
-		DoctorCommandTimeoutSec: *doctorTimeout,
-		DoctorDeep:              *doctorDeep,
-		StartupProtectSeconds:   *startupProtect,
-		RestartCooldownSeconds:  *transitionGrace,
-		OfflineGraceSeconds:     *offlineGrace,
-		HealthyConfirmCount:     2,
-		UnhealthyConfirmCount:   1,
-		LogLevel:                *logLevel,
-		GatewayHost:             *gatewayHost,
-		GatewayPort:             *gatewayPort,
+		OpenClawPath:           *openclawPath,
+		RootDir:                *rootDir,
+		AgentID:                *agentID,
+		ProbeIntervalSeconds:   *probeInterval,
+		StartupProtectSeconds:  *startupProtect,
+		RestartCooldownSeconds: *transitionGrace,
+		OfflineGraceSeconds:    *offlineGrace,
+		HealthyConfirmCount:    2,
+		UnhealthyConfirmCount:  1,
+		LogLevel:               *logLevel,
+		GatewayHost:            *gatewayHost,
+		GatewayPort:            *gatewayPort,
 	}
 
 	logger := log.New(os.Stdout, "detector ", log.LstdFlags)
@@ -113,11 +103,6 @@ func main() {
 	logger.Printf("  root: %s", cfg.RootDir)
 	logger.Printf("  agent: %s", cfg.AgentID)
 	logger.Printf("  probe-interval: %d seconds", cfg.ProbeIntervalSeconds)
-	logger.Printf("  candidate-stable: %d seconds", cfg.CandidateStableSeconds)
-	logger.Printf("  health-interval: %d seconds", cfg.HealthCheckIntervalSec)
-	logger.Printf("  health-timeout: %d seconds", cfg.HealthCommandTimeoutSec)
-	logger.Printf("  doctor-timeout: %d seconds", cfg.DoctorCommandTimeoutSec)
-	logger.Printf("  doctor-deep: %t", cfg.DoctorDeep)
 	logger.Printf("  startup-protect: %d seconds", cfg.StartupProtectSeconds)
 	logger.Printf("  transition-grace: %d seconds", cfg.RestartCooldownSeconds)
 	logger.Printf("  offline-grace: %d seconds", cfg.OfflineGraceSeconds)

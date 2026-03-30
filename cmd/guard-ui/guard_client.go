@@ -55,6 +55,15 @@ type StatusSnapshot struct {
 type detectorStatusFile struct {
 	DetectorState     string    `json:"detectorState"`
 	GatewayStatus     string    `json:"gatewayStatus"`
+	GuardAttached     bool      `json:"guardAttached"`
+	UIAttached        bool      `json:"uiAttached"`
+	GuardPID          int       `json:"guardPid,omitempty"`
+	UIPID             int       `json:"uiPid,omitempty"`
+	LastNotifyType    string    `json:"lastNotifyType,omitempty"`
+	LastNotifyMessage string    `json:"lastNotifyMessage,omitempty"`
+	LastNotifyAt      time.Time `json:"lastNotifyAt,omitempty"`
+}
+type reviewStatusFile struct {
 	CandidateStatus   string    `json:"candidateStatus,omitempty"`
 	CandidateTargets  []string  `json:"candidateTargets,omitempty"`
 	CandidateSince    time.Time `json:"candidateSince,omitempty"`
@@ -68,11 +77,32 @@ type detectorStatusFile struct {
 	RollbackStatus    string    `json:"rollbackStatus,omitempty"`
 	RollbackMessage   string    `json:"rollbackMessage,omitempty"`
 	RollbackAt        time.Time `json:"rollbackAt,omitempty"`
-	LastNotifyType    string    `json:"lastNotifyType,omitempty"`
-	LastNotifyMessage string    `json:"lastNotifyMessage,omitempty"`
-	LastNotifyAt      time.Time `json:"lastNotifyAt,omitempty"`
 }
 
+func (c *GuardCLI) reviewStatusPath() string {
+	if c.RootDir == "" {
+		return ""
+	}
+	return filepath.Join(c.RootDir, ".guard-state", "review-status.json")
+}
+
+func (c *GuardCLI) readReviewStatus() reviewStatusFile {
+	path := c.reviewStatusPath()
+	if path == "" {
+		return reviewStatusFile{}
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return reviewStatusFile{}
+	}
+
+	var s reviewStatusFile
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return reviewStatusFile{}
+	}
+	return s
+}
 func (c *GuardCLI) detectorStatusPath() string {
 	if c.RootDir == "" {
 		return ""
@@ -153,19 +183,21 @@ func (c *GuardCLI) Snapshot(ctx context.Context) StatusSnapshot {
 	snap.DetectorNotifyType = strings.TrimSpace(detectorFile.LastNotifyType)
 	snap.DetectorNotifyMessage = strings.TrimSpace(detectorFile.LastNotifyMessage)
 	snap.DetectorNotifyAt = detectorFile.LastNotifyAt
-	snap.CandidateStatus = strings.TrimSpace(detectorFile.CandidateStatus)
-	snap.CandidateTargets = strings.Join(detectorFile.CandidateTargets, ", ")
-	snap.HealthStatus = strings.TrimSpace(detectorFile.HealthStatus)
-	snap.HealthMessage = strings.TrimSpace(detectorFile.HealthMessage)
-	snap.LastHealthCheckAt = detectorFile.LastHealthCheckAt
-	snap.CandidateSince = detectorFile.CandidateSince
-	snap.DiagnosisStatus = strings.TrimSpace(detectorFile.DiagnosisStatus)
-	snap.DiagnosisSummary = strings.TrimSpace(detectorFile.DiagnosisSummary)
-	snap.DiagnosisAt = detectorFile.DiagnosisAt
-	snap.DoctorLogPath = strings.TrimSpace(detectorFile.DoctorLogPath)
-	snap.RollbackStatus = strings.TrimSpace(detectorFile.RollbackStatus)
-	snap.RollbackMessage = strings.TrimSpace(detectorFile.RollbackMessage)
-	snap.RollbackAt = detectorFile.RollbackAt
+
+	reviewFile := c.readReviewStatus()
+	snap.CandidateStatus = strings.TrimSpace(reviewFile.CandidateStatus)
+	snap.CandidateTargets = strings.Join(reviewFile.CandidateTargets, ", ")
+	snap.HealthStatus = strings.TrimSpace(reviewFile.HealthStatus)
+	snap.HealthMessage = strings.TrimSpace(reviewFile.HealthMessage)
+	snap.LastHealthCheckAt = reviewFile.LastHealthCheckAt
+	snap.CandidateSince = reviewFile.CandidateSince
+	snap.DiagnosisStatus = strings.TrimSpace(reviewFile.DiagnosisStatus)
+	snap.DiagnosisSummary = strings.TrimSpace(reviewFile.DiagnosisSummary)
+	snap.DiagnosisAt = reviewFile.DiagnosisAt
+	snap.DoctorLogPath = strings.TrimSpace(reviewFile.DoctorLogPath)
+	snap.RollbackStatus = strings.TrimSpace(reviewFile.RollbackStatus)
+	snap.RollbackMessage = strings.TrimSpace(reviewFile.RollbackMessage)
+	snap.RollbackAt = reviewFile.RollbackAt
 	if details, err := c.GuardStatusDetails(ctx); err == nil {
 		if v := strings.TrimSpace(details["guardStatus"]); v != "" {
 			snap.GuardStatus = v

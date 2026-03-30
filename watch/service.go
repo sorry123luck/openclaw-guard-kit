@@ -1,3 +1,5 @@
+//go:build windows
+
 package watch
 
 import (
@@ -14,8 +16,11 @@ import (
 
 	"openclaw-guard-kit/backup"
 	"openclaw-guard-kit/config"
+	internalnotify "openclaw-guard-kit/internal/notify"
 	"openclaw-guard-kit/internal/protocol"
+	"openclaw-guard-kit/internal/review"
 	"openclaw-guard-kit/logging"
+	extnotif "openclaw-guard-kit/notify"
 )
 
 type EventDispatcher interface {
@@ -365,6 +370,7 @@ func (s *Service) Run(ctx context.Context, cfg config.AppConfig) error {
 		},
 	}
 	s.emit(ctx, cfg, startEvent)
+	go s.runReviewWorker(ctx, cfg)
 
 	ticker := time.NewTicker(time.Duration(cfg.PollIntervalSeconds) * time.Second)
 	defer ticker.Stop()
@@ -506,7 +512,69 @@ func (s *Service) scanOnce(ctx context.Context, cfg config.AppConfig) error {
 
 	return nil
 }
+func (s *Service) runReviewWorker(ctx context.Context, cfg config.AppConfig) {
+	logger := s.logger
 
+	reviewCfg := &review.ReviewConfig{
+		OpenClawPath:            cfg.OpenClawPath,
+		RootDir:                 cfg.RootDir,
+		AgentID:                 cfg.AgentID,
+		CandidateStableSeconds:  cfg.CandidateStableSeconds,
+		HealthCheckIntervalSec:  cfg.HealthCheckIntervalSec,
+		HealthCommandTimeoutSec: cfg.HealthCommandTimeoutSec,
+		DoctorCommandTimeoutSec: cfg.DoctorCommandTimeoutSec,
+		DoctorDeep:              cfg.DoctorDeep,
+	}
+
+	notifier := internalnotify.NewMultiNotifier(
+		nil,
+		extnotif.TelegramNotifier{},
+		extnotif.FeishuNotifier{},
+		extnotif.WeComNotifier{},
+	)
+
+	rw := review.NewReviewWorker(
+		logger.CoreLogger(),
+		reviewCfg,
+		s.backupSvc,
+		notifier,
+		cfg.RootDir,
+	)
+
+	ticker := time.NewTicker(time.Duration(cfg.PollIntervalSeconds) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			manifest, err := backup.LoadManifest(cfg.StateFile)
+			if err != nil {
+				if logger != nil {
+					logger.Error(
+						"review worker: failed to load manifest",
+						"agent", cfg.AgentID,
+						"stateFile", cfg.StateFile,
+						"error", err,
+					)
+				}
+				continue
+			}
+
+			if err := rw.ProcessManifest(ctx, manifest); err != nil {
+				if logger != nil {
+					logger.Error(
+						"review worker: failed to process manifest",
+						"agent", cfg.AgentID,
+						"stateFile", cfg.StateFile,
+						"error", err,
+					)
+				}
+			}
+		}
+	}
+}
 func compareToBaseline(snapshot backup.Snapshot) (bool, string, error) {
 	switch {
 	case isAuthProfilesSnapshot(snapshot):

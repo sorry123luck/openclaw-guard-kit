@@ -1,3 +1,5 @@
+//go:build windows
+
 package config
 
 import (
@@ -31,6 +33,12 @@ type AppConfig struct {
 	RestoreOnDelete     bool     `json:"restoreOnDelete"`
 	AutoPrepare         bool     `json:"autoPrepare"`
 	LogFile             string   `json:"logFile,omitempty"`
+	// Review-specific parameters (moved from detector)
+	CandidateStableSeconds  int  `json:"candidateStableSeconds"`
+	HealthCheckIntervalSec  int  `json:"healthCheckIntervalSec"`
+	HealthCommandTimeoutSec int  `json:"healthCommandTimeoutSec"`
+	DoctorCommandTimeoutSec int  `json:"doctorCommandTimeoutSec"`
+	DoctorDeep              bool `json:"doctorDeep"`
 }
 
 type Options struct {
@@ -49,8 +57,13 @@ type Options struct {
 	PollIntervalSeconds    int
 	DriftStableSeconds     int
 	LogFile                string
+	// Review-specific options
+	CandidateStableSeconds  int
+	HealthCheckIntervalSec  int
+	HealthCommandTimeoutSec int
+	DoctorCommandTimeoutSec int
+	DoctorDeep              bool
 }
-
 type partialConfig struct {
 	RootDir             *string `json:"rootDir"`
 	AgentID             *string `json:"agentId"`
@@ -66,10 +79,17 @@ type partialConfig struct {
 	RestoreOnDelete     *bool   `json:"restoreOnDelete"`
 	AutoPrepare         *bool   `json:"autoPrepare"`
 	LogFile             *string `json:"logFile"`
+
+	CandidateStableSeconds  *int  `json:"candidateStableSeconds"`
+	HealthCheckIntervalSec  *int  `json:"healthCheckIntervalSec"`
+	HealthCommandTimeoutSec *int  `json:"healthCommandTimeoutSec"`
+	DoctorCommandTimeoutSec *int  `json:"doctorCommandTimeoutSec"`
+	DoctorDeep              *bool `json:"doctorDeep"`
 }
 
 func Resolve(opts Options) (AppConfig, error) {
 	cfg := defaultConfig()
+	var err error
 
 	if opts.ConfigPath != "" {
 		loaded, err := loadFromFile(opts.ConfigPath)
@@ -103,8 +123,11 @@ func Resolve(opts Options) (AppConfig, error) {
 	if opts.DriftStableSeconds > 0 {
 		cfg.DriftStableSeconds = opts.DriftStableSeconds
 	}
-	if opts.LogFile != "" {
-		cfg.LogFile = opts.LogFile
+	if cfg.LogFile != "" {
+		cfg.LogFile, err = absFromRoot(cfg.RootDir, cfg.LogFile)
+		if err != nil {
+			return AppConfig{}, fmt.Errorf("resolve log file: %w", err)
+		}
 	}
 	if opts.IncludeAuthProfilesSet {
 		cfg.IncludeAuthProfiles = opts.IncludeAuthProfiles
@@ -113,13 +136,24 @@ func Resolve(opts Options) (AppConfig, error) {
 		cfg.IncludeModels = opts.IncludeModels
 	}
 
-	if cfg.RootDir == "" {
-		cfg.RootDir = defaultRootDir()
+	// Review-specific options
+	if opts.CandidateStableSeconds != 0 {
+		cfg.CandidateStableSeconds = opts.CandidateStableSeconds
 	}
-	if strings.TrimSpace(cfg.AgentID) == "" {
-		cfg.AgentID = "main"
+	if opts.HealthCheckIntervalSec != 0 {
+		cfg.HealthCheckIntervalSec = opts.HealthCheckIntervalSec
 	}
-	if len(opts.Agents) > 0 {
+	if opts.HealthCommandTimeoutSec != 0 {
+		cfg.HealthCommandTimeoutSec = opts.HealthCommandTimeoutSec
+	}
+	if opts.DoctorCommandTimeoutSec != 0 {
+		cfg.DoctorCommandTimeoutSec = opts.DoctorCommandTimeoutSec
+	}
+	if opts.DoctorDeep {
+		cfg.DoctorDeep = opts.DoctorDeep
+	}
+
+	if opts.Agents != nil {
 		cfg.Agents = opts.Agents
 	}
 
@@ -281,6 +315,12 @@ func defaultConfig() AppConfig {
 		RestoreOnChange:     true,
 		RestoreOnDelete:     true,
 		AutoPrepare:         true,
+		// Review-specific defaults (matching detector's defaults)
+		CandidateStableSeconds:  120,
+		HealthCheckIntervalSec:  30,
+		HealthCommandTimeoutSec: 20,
+		DoctorCommandTimeoutSec: 60,
+		DoctorDeep:              false,
 	}
 }
 
@@ -289,12 +329,10 @@ func defaultRootDir() string {
 	if err == nil && home != "" {
 		return filepath.Join(home, ".openclaw")
 	}
-
 	wd, err := os.Getwd()
 	if err == nil && wd != "" {
 		return filepath.Join(wd, ".openclaw")
 	}
-
 	return ".openclaw"
 }
 
@@ -353,6 +391,21 @@ func merge(base AppConfig, override partialConfig) AppConfig {
 	}
 	if override.LogFile != nil {
 		base.LogFile = *override.LogFile
+	}
+	if override.CandidateStableSeconds != nil {
+		base.CandidateStableSeconds = *override.CandidateStableSeconds
+	}
+	if override.HealthCheckIntervalSec != nil {
+		base.HealthCheckIntervalSec = *override.HealthCheckIntervalSec
+	}
+	if override.HealthCommandTimeoutSec != nil {
+		base.HealthCommandTimeoutSec = *override.HealthCommandTimeoutSec
+	}
+	if override.DoctorCommandTimeoutSec != nil {
+		base.DoctorCommandTimeoutSec = *override.DoctorCommandTimeoutSec
+	}
+	if override.DoctorDeep != nil {
+		base.DoctorDeep = *override.DoctorDeep
 	}
 	return base
 }
