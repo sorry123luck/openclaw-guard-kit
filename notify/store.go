@@ -15,20 +15,27 @@ const (
 	BindingStatusBound   = "bound"
 	BindingStatusRevoked = "revoked"
 
-	ConnectionStatusUnknown  = "unknown"
-	ConnectionStatusOK       = "ok"
-	ConnectionStatusFailed   = "failed"
+	ConnectionStatusUnknown = "unknown"
+	ConnectionStatusOK      = "ok"
+	ConnectionStatusFailed  = "failed"
+
 	defaultPendingBindingTTL = 3 * time.Minute
+	currentStoreVersion      = 2
 )
 
 type BindingRecord struct {
-	ID               string    `json:"id"`
-	Channel          string    `json:"channel"`
-	AccountID        string    `json:"accountId"`             // 非敏感账号标识：Telegram=bot_id, 飞书=appId, 企业微信=corpId|agentId
-	SenderID         string    `json:"senderId"`              // 消息来源ID：Telegram=chat_id, 飞书=open_id, 企业微信=user_id
-	DisplayName      string    `json:"displayName,omitempty"` // 被绑定对象的显示名（用户侧）
-	PairingCode      string    `json:"pairingCode,omitempty"` // 配对码
-	Status           string    `json:"status"`                // pending | bound | revoked
+	ID        string `json:"id"`
+	Channel   string `json:"channel"`
+	AccountID string `json:"accountId"` // 非敏感账号标识：Telegram=bot_id, 飞书=appId, 企业微信=corpId|agentId
+	SenderID  string `json:"senderId"`  // 消息来源ID：Telegram=chat_id, 飞书=open_id, 企业微信=user_id
+
+	DisplayName string `json:"displayName,omitempty"` // 被绑定对象的显示名（用户侧）
+	PairingCode string `json:"pairingCode,omitempty"` // 配对码
+	Status      string `json:"status"`                // pending | bound | revoked
+
+	NotifyEnabled        bool `json:"notifyEnabled"`
+	RemoteCommandEnabled bool `json:"remoteCommandEnabled"`
+
 	BoundAt          time.Time `json:"boundAt,omitempty"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
@@ -64,7 +71,7 @@ func NewStore(path string) (*Store, error) {
 	s := &Store{
 		path: path,
 		data: StoreData{
-			Version:         1,
+			Version:         currentStoreVersion,
 			Bindings:        []BindingRecord{},
 			PendingBindings: []PendingBinding{},
 		},
@@ -102,6 +109,14 @@ func (s *Store) Load() error {
 	}
 	if data.PendingBindings == nil {
 		data.PendingBindings = []PendingBinding{}
+	}
+
+	if data.Version < currentStoreVersion {
+		for i := range data.Bindings {
+			data.Bindings[i].NotifyEnabled = true
+			data.Bindings[i].RemoteCommandEnabled = true
+		}
+		data.Version = currentStoreVersion
 	}
 
 	s.data = data
@@ -225,17 +240,19 @@ func (s *Store) MarkBound(channel, accountID, senderID, displayName, pairingCode
 	id := buildBindingID(channel, accountID, senderID)
 
 	record := BindingRecord{
-		ID:               id,
-		Channel:          channel,
-		AccountID:        accountID,
-		SenderID:         senderID,
-		DisplayName:      displayName,
-		PairingCode:      pairingCode,
-		Status:           BindingStatusBound,
-		BoundAt:          now,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-		ConnectionStatus: ConnectionStatusUnknown,
+		ID:                   id,
+		Channel:              channel,
+		AccountID:            accountID,
+		SenderID:             senderID,
+		DisplayName:          displayName,
+		PairingCode:          pairingCode,
+		Status:               BindingStatusBound,
+		NotifyEnabled:        true,
+		RemoteCommandEnabled: true,
+		BoundAt:              now,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+		ConnectionStatus:     ConnectionStatusUnknown,
 	}
 
 	updated := false
@@ -245,11 +262,14 @@ func (s *Store) MarkBound(channel, accountID, senderID, displayName, pairingCode
 			record.LastTestAt = s.data.Bindings[i].LastTestAt
 			record.LastTestResult = s.data.Bindings[i].LastTestResult
 			record.ConnectionStatus = s.data.Bindings[i].ConnectionStatus
+			record.NotifyEnabled = s.data.Bindings[i].NotifyEnabled
+			record.RemoteCommandEnabled = s.data.Bindings[i].RemoteCommandEnabled
 			s.data.Bindings[i] = record
 			updated = true
 			break
 		}
 	}
+
 	if !updated {
 		s.data.Bindings = append(s.data.Bindings, record)
 	}
@@ -288,7 +308,24 @@ func (s *Store) UpdateBindingTestResult(channel, accountID, senderID, result, co
 
 	return nil
 }
+func (s *Store) UpdateBindingOptions(channel, accountID, senderID string, notifyEnabled, remoteCommandEnabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
+	id := buildBindingID(channel, accountID, senderID)
+	now := time.Now().UTC()
+
+	for i := range s.data.Bindings {
+		if s.data.Bindings[i].ID == id {
+			s.data.Bindings[i].NotifyEnabled = notifyEnabled
+			s.data.Bindings[i].RemoteCommandEnabled = remoteCommandEnabled
+			s.data.Bindings[i].UpdatedAt = now
+			return s.saveLocked()
+		}
+	}
+
+	return nil
+}
 func (s *Store) RevokeBinding(channel, accountID, senderID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -319,8 +356,8 @@ func (s *Store) cleanupExpiredPendingLocked() {
 }
 
 func (s *Store) saveLocked() error {
-	if s.data.Version <= 0 {
-		s.data.Version = 1
+	if s.data.Version < currentStoreVersion {
+		s.data.Version = currentStoreVersion
 	}
 	if s.data.Bindings == nil {
 		s.data.Bindings = []BindingRecord{}

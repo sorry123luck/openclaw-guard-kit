@@ -9,9 +9,16 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"openclaw-guard-kit/internal/protocol"
+
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
 const (
@@ -20,6 +27,187 @@ const (
 )
 
 type FeishuNotifier struct{}
+type FeishuInboundMessage struct {
+	AppID       string
+	OpenID      string
+	DisplayName string
+	MsgType     string
+	Content     string
+	ReceivedAt  time.Time
+}
+
+type FeishuInboundSink func(FeishuInboundMessage)
+
+var (
+	feishuSinkMu       sync.Mutex
+	feishuSinkSeq      int64
+	feishuInboundSinks = map[int64]FeishuInboundSink{}
+)
+
+type feishuListenerState struct {
+	mu        sync.Mutex
+	appID     string
+	appSecret string
+	running   bool
+	cancel    context.CancelFunc
+}
+
+var globalFeishuListener = &feishuListenerState{}
+
+func RegisterFeishuInboundSink(fn FeishuInboundSink) func() {
+	if fn == nil {
+		return func() {}
+	}
+
+	id := atomic.AddInt64(&feishuSinkSeq, 1)
+
+	feishuSinkMu.Lock()
+	feishuInboundSinks[id] = fn
+	feishuSinkMu.Unlock()
+
+	return func() {
+		feishuSinkMu.Lock()
+		delete(feishuInboundSinks, id)
+		feishuSinkMu.Unlock()
+	}
+}
+
+func publishFeishuInboundMessage(msg FeishuInboundMessage) {
+	feishuSinkMu.Lock()
+	sinks := make([]FeishuInboundSink, 0, len(feishuInboundSinks))
+	for _, fn := range feishuInboundSinks {
+		sinks = append(sinks, fn)
+	}
+	feishuSinkMu.Unlock()
+
+	for _, fn := range sinks {
+		func(s FeishuInboundSink) {
+			defer func() { _ = recover() }()
+			s(msg)
+		}(fn)
+	}
+}
+
+func EnsureFeishuInboundListener(appID, appSecret string) error {
+	appID = strings.TrimSpace(appID)
+	appSecret = strings.TrimSpace(appSecret)
+
+	if appID == "" {
+		return fmt.Errorf("feishu app id 不能为空")
+	}
+	if appSecret == "" {
+		return fmt.Errorf("feishu app secret 不能为空")
+	}
+
+	s := globalFeishuListener
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.running && s.appID == appID && s.appSecret == appSecret {
+		return nil
+	}
+
+	s.stopLocked()
+	s.startLocked(appID, appSecret)
+	return nil
+}
+
+func StopFeishuInboundListener() {
+	s := globalFeishuListener
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopLocked()
+}
+
+func (s *feishuListenerState) startLocked(appID, appSecret string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.appID = appID
+	s.appSecret = appSecret
+	s.running = true
+	s.cancel = cancel
+
+	go s.run(ctx, appID, appSecret)
+}
+
+func (s *feishuListenerState) stopLocked() {
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	s.running = false
+	s.appID = ""
+	s.appSecret = ""
+}
+
+func (s *feishuListenerState) run(ctx context.Context, appID, appSecret string) {
+	eventHandler := dispatcher.NewEventDispatcher("", "").
+		OnP2MessageReceiveV1(func(evctx context.Context, event *larkim.P2MessageReceiveV1) error {
+			handleFeishuInboundEvent(evctx, appID, appSecret, event)
+			return nil
+		})
+
+	client := larkws.NewClient(
+		appID,
+		appSecret,
+		larkws.WithEventHandler(eventHandler),
+		larkws.WithAutoReconnect(true),
+		larkws.WithLogLevel(larkcore.LogLevelError),
+	)
+
+	_ = client.Start(ctx)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.running && s.appID == appID && s.appSecret == appSecret {
+		s.running = false
+		s.cancel = nil
+	}
+}
+
+func handleFeishuInboundEvent(ctx context.Context, appID, appSecret string, event *larkim.P2MessageReceiveV1) {
+	if event == nil || event.Event == nil {
+		return
+	}
+
+	msg := event.Event.Message
+	sender := event.Event.Sender
+	if msg == nil || sender == nil || sender.SenderId == nil {
+		return
+	}
+
+	msgType := derefString(msg.MessageType)
+	if msgType != "" && !strings.EqualFold(msgType, "text") {
+		return
+	}
+
+	text := extractFeishuTextMessage(derefString(msg.Content))
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+
+	openID := ""
+	if sender.SenderId.OpenId != nil {
+		openID = strings.TrimSpace(*sender.SenderId.OpenId)
+	}
+	if openID == "" {
+		return
+	}
+
+	displayName := openID
+	if name, err := getFeishuUserName(ctx, appID, appSecret, openID); err == nil && strings.TrimSpace(name) != "" {
+		displayName = strings.TrimSpace(name)
+	}
+
+	publishFeishuInboundMessage(FeishuInboundMessage{
+		AppID:       strings.TrimSpace(appID),
+		OpenID:      openID,
+		DisplayName: displayName,
+		MsgType:     "text",
+		Content:     text,
+		ReceivedAt:  time.Now(),
+	})
+}
 
 type feishuTenantTokenRequest struct {
 	AppID     string `json:"app_id"`
@@ -201,11 +389,19 @@ func resolveBoundFeishuOpenID() string {
 
 	bindings := store.ListBindings()
 	for _, binding := range bindings {
-		if strings.EqualFold(strings.TrimSpace(binding.Channel), "feishu") &&
-			strings.EqualFold(strings.TrimSpace(binding.Status), BindingStatusBound) &&
-			strings.TrimSpace(binding.SenderID) != "" {
-			return strings.TrimSpace(binding.SenderID)
+		if !strings.EqualFold(strings.TrimSpace(binding.Channel), "feishu") {
+			continue
 		}
+		if !strings.EqualFold(strings.TrimSpace(binding.Status), BindingStatusBound) {
+			continue
+		}
+		if !binding.NotifyEnabled {
+			continue
+		}
+		if strings.TrimSpace(binding.SenderID) == "" {
+			continue
+		}
+		return strings.TrimSpace(binding.SenderID)
 	}
 
 	return strings.TrimSpace(os.Getenv("FEISHU_OPEN_ID"))

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	internalnotify "openclaw-guard-kit/internal/notify"
@@ -38,6 +39,17 @@ const (
 	DetStateTransition
 	DetStateOfflineConfirmed
 	DetStateOffline
+	DetStateExiting
+)
+const (
+	remoteCommandStart   = "start"
+	remoteCommandRestart = "restart"
+
+	remoteCommandFastProbeSeconds  = 30
+	remoteCommandFastProbeInterval = 1 * time.Second
+
+	remoteCommandVerifyTotalWait = 20 * time.Second
+	remoteCommandVerifyStep      = 1 * time.Second
 )
 
 type DetectorConfig struct {
@@ -80,6 +92,18 @@ type Detector struct {
 	lastNotifyType    string
 	lastNotifyMessage string
 	lastNotifyAt      time.Time
+
+	telegramInboundStop func()
+	feishuInboundStop   func()
+	wecomInboundStop    func()
+
+	remoteCmdMu          sync.Mutex
+	lastRemoteCommandKey string
+	lastRemoteCommandAt  time.Time
+	fastProbeMu          sync.Mutex
+	fastProbeUntil       time.Time
+	shutdownRequested    bool
+	shutdownMessage      string
 }
 
 type detectorStatusFile struct {
@@ -119,8 +143,41 @@ func NewDetector(logger *log.Logger, cfg DetectorConfig, guardExePath, guardUIEx
 		notifier:       lifecycleNotifier,
 	}
 }
+func (d *Detector) beginShutdown(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "Detector 退出中，已关闭 UI 和守护程序。"
+	}
 
+	d.shutdownRequested = true
+	d.shutdownMessage = message
+	d.state = DetStateExiting
+	d.lastNotifyType = "detector.exiting"
+	d.lastNotifyMessage = message
+	d.lastNotifyAt = time.Now().UTC()
+
+	if d.logger != nil {
+		d.logger.Printf("%s", message)
+	}
+}
+
+func (d *Detector) shutdown(ctx context.Context) error {
+	d.beginShutdown("Detector 退出中，已关闭 UI 和守护程序。")
+	d.writeStatusFile()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	d.stopUIIfNeeded(shutdownCtx)
+	d.stopGuardIfNeeded(shutdownCtx)
+	cancel()
+
+	d.refreshAttachmentFlags(context.Background())
+	d.writeStatusFile()
+	return ctx.Err()
+}
 func (d *Detector) Run(ctx context.Context) error {
+	d.registerRemoteCommandHooks()
+	defer d.unregisterRemoteCommandHooks()
+
 	d.state = DetStateStarting
 	d.tick(ctx)
 
@@ -130,20 +187,30 @@ func (d *Detector) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			d.stopUIIfNeeded(shutdownCtx)
-			d.stopGuardIfNeeded(shutdownCtx)
-			cancel()
-			d.refreshAttachmentFlags(context.Background())
-			d.writeStatusFile()
-			return ctx.Err()
+			return d.shutdown(ctx)
+
 		case <-ticker.C:
+			// 关键修复：
+			// Ctrl+C 时如果 ctx.Done 和 ticker 同时到达，不要再继续走一次 tick，
+			// 否则可能把 detector 自己退出误发成 OpenClaw 正在关闭。
+			if ctx.Err() != nil {
+				return d.shutdown(ctx)
+			}
+			if d.shutdownRequested {
+				return d.shutdown(ctx)
+			}
 			d.tick(ctx)
 		}
 	}
 }
 
 func (d *Detector) tick(ctx context.Context) {
+	if d.shutdownRequested {
+		d.state = DetStateExiting
+		d.writeStatusFile()
+		return
+	}
+	d.refreshRemoteCommandChannels()
 	prevState := d.state
 	prevGuardAttached := d.guardAttached
 	prevUIAttached := d.uiAttached
@@ -422,6 +489,9 @@ func (d *Detector) refreshAttachmentFlags(ctx context.Context) {
 }
 
 func (d *Detector) publishLifecycleEvents(ctx context.Context, prevState DetectorState, prevGuardAttached, prevUIAttached bool) {
+	if d.shutdownRequested {
+		return
+	}
 	switch {
 	case prevState == DetStateTransition && d.state == DetStateOnline:
 		d.notifyLifecycle(ctx, protocol.EventOpenClawRecovered, "OpenClaw 已恢复。")
@@ -462,7 +532,442 @@ func (d *Detector) notifyAnomaly(ctx context.Context, key, message string) {
 		"component": key,
 	})
 }
+func (d *Detector) registerRemoteCommandHooks() {
+	if d.telegramInboundStop == nil {
+		d.telegramInboundStop = notify.RegisterTelegramInboundSink(func(msg notify.TelegramInboundMessage) {
+			d.handleTelegramRemoteCommand(msg)
+		})
+	}
 
+	if d.feishuInboundStop == nil {
+		d.feishuInboundStop = notify.RegisterFeishuInboundSink(func(msg notify.FeishuInboundMessage) {
+			d.handleFeishuRemoteCommand(msg)
+		})
+	}
+
+	if d.wecomInboundStop == nil {
+		d.wecomInboundStop = notify.RegisterWecomInboundSink(func(msg notify.WecomInboundMessage) {
+			d.handleWecomRemoteCommand(msg)
+		})
+	}
+
+	d.refreshRemoteCommandChannels()
+}
+
+func (d *Detector) unregisterRemoteCommandHooks() {
+	if d.telegramInboundStop != nil {
+		d.telegramInboundStop()
+		d.telegramInboundStop = nil
+	}
+	if d.feishuInboundStop != nil {
+		d.feishuInboundStop()
+		d.feishuInboundStop = nil
+	}
+	if d.wecomInboundStop != nil {
+		d.wecomInboundStop()
+		d.wecomInboundStop = nil
+	}
+}
+
+func (d *Detector) refreshRemoteCommandChannels() {
+	if strings.TrimSpace(d.cfg.RootDir) != "" {
+		notify.SetRootDir(d.cfg.RootDir)
+		notify.InitCredentialsStore(d.cfg.RootDir)
+	}
+
+	if token := strings.TrimSpace(notify.GetTelegramToken()); token != "" {
+		if err := notify.EnsureTelegramInboundPolling(token); err != nil && d.logger != nil {
+			d.logger.Printf("ensure telegram inbound polling failed: %v", err)
+		}
+	}
+
+	if appID, appSecret := notify.GetFeishuCredentials(); strings.TrimSpace(appID) != "" && strings.TrimSpace(appSecret) != "" {
+		if err := notify.EnsureFeishuInboundListener(appID, appSecret); err != nil && d.logger != nil {
+			d.logger.Printf("ensure feishu inbound listener failed: %v", err)
+		}
+	}
+
+	if botID, secret := notify.GetWecomCredentials(); strings.TrimSpace(botID) != "" && strings.TrimSpace(secret) != "" {
+		if err := notify.EnsureWecomBridge(botID, secret); err != nil && d.logger != nil {
+			d.logger.Printf("ensure wecom bridge failed: %v", err)
+		}
+	}
+}
+
+func normalizeRemoteCommandText(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
+}
+
+func parseRemoteCommandAction(text string) (string, bool) {
+	switch normalizeRemoteCommandText(text) {
+	case "启动openclaw", "启动 openclaw", "打开openclaw", "打开 openclaw", "openclaw gateway start":
+		return remoteCommandStart, true
+	case "重启openclaw", "重启 openclaw", "重新启动openclaw", "重新启动 openclaw":
+		return remoteCommandRestart, true
+	default:
+		return "", false
+	}
+}
+
+func (d *Detector) handleTelegramRemoteCommand(msg notify.TelegramInboundMessage) {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		return
+	}
+
+	action, ok := parseRemoteCommandAction(text)
+	if !ok {
+		return
+	}
+
+	if !d.isBoundTelegramSender(msg) {
+		if d.logger != nil {
+			d.logger.Printf("ignore unbound telegram remote command | bot=%s chat=%d raw=%s", msg.BotID, msg.ChatID, msg.Text)
+		}
+		return
+	}
+
+	key := strings.TrimSpace(msg.BotID) + "|" + strconv.FormatInt(msg.ChatID, 10) + "|" + normalizeRemoteCommandText(text)
+	if d.shouldDropRemoteCommand(key) {
+		return
+	}
+
+	go d.executeRemoteCommand(action, func(reply string) {
+		d.replyTelegramRemoteCommand(msg, reply)
+	})
+}
+
+func (d *Detector) handleFeishuRemoteCommand(msg notify.FeishuInboundMessage) {
+	if !strings.EqualFold(strings.TrimSpace(msg.MsgType), "text") && strings.TrimSpace(msg.Content) == "" {
+		return
+	}
+
+	action, ok := parseRemoteCommandAction(msg.Content)
+	if !ok {
+		return
+	}
+
+	if !d.isBoundFeishuSender(msg) {
+		if d.logger != nil {
+			d.logger.Printf("ignore unbound feishu remote command | app=%s openID=%s raw=%s", msg.AppID, msg.OpenID, msg.Content)
+		}
+		return
+	}
+
+	key := strings.TrimSpace(msg.AppID) + "|" + strings.TrimSpace(msg.OpenID) + "|" + normalizeRemoteCommandText(msg.Content)
+	if d.shouldDropRemoteCommand(key) {
+		return
+	}
+
+	go d.executeRemoteCommand(action, func(reply string) {
+		d.replyFeishuRemoteCommand(msg, reply)
+	})
+}
+
+func (d *Detector) handleWecomRemoteCommand(msg notify.WecomInboundMessage) {
+	if !strings.EqualFold(strings.TrimSpace(msg.MsgType), "text") && strings.TrimSpace(msg.Content) == "" {
+		return
+	}
+
+	action, ok := parseRemoteCommandAction(msg.Content)
+	if !ok {
+		return
+	}
+
+	if !d.isBoundWecomSender(msg) {
+		if d.logger != nil {
+			d.logger.Printf("ignore unbound wecom remote command | bot=%s user=%s raw=%s", msg.BotID, msg.UserID, msg.Content)
+		}
+		return
+	}
+
+	key := strings.TrimSpace(msg.BotID) + "|" + strings.TrimSpace(msg.UserID) + "|" + normalizeRemoteCommandText(msg.Content)
+	if d.shouldDropRemoteCommand(key) {
+		return
+	}
+
+	go d.executeRemoteCommand(action, func(reply string) {
+		d.replyWecomRemoteCommand(msg, reply)
+	})
+}
+
+func (d *Detector) shouldDropRemoteCommand(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+
+	d.remoteCmdMu.Lock()
+	defer d.remoteCmdMu.Unlock()
+
+	if key == d.lastRemoteCommandKey && time.Since(d.lastRemoteCommandAt) < 10*time.Second {
+		return true
+	}
+
+	d.lastRemoteCommandKey = key
+	d.lastRemoteCommandAt = time.Now().UTC()
+	return false
+}
+
+func (d *Detector) isBoundTelegramSender(msg notify.TelegramInboundMessage) bool {
+	root := strings.TrimSpace(d.cfg.RootDir)
+	if root == "" {
+		return false
+	}
+
+	store, err := notify.NewStore(notify.BindingsPath(root))
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Printf("load bindings store failed: %v", err)
+		}
+		return false
+	}
+
+	botID := strings.TrimSpace(msg.BotID)
+	chatID := strconv.FormatInt(msg.ChatID, 10)
+	if botID == "" || chatID == "0" {
+		return false
+	}
+
+	for _, b := range store.ListBindings() {
+		if !strings.EqualFold(strings.TrimSpace(b.Channel), "telegram") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(b.Status), notify.BindingStatusBound) {
+			continue
+		}
+		if strings.TrimSpace(b.AccountID) != botID {
+			continue
+		}
+		if strings.TrimSpace(b.SenderID) != chatID {
+			continue
+		}
+		if !b.RemoteCommandEnabled {
+			if d.logger != nil {
+				d.logger.Printf("ignore telegram remote command: remote command disabled | bot=%s chat=%s", botID, chatID)
+			}
+			return false
+		}
+		return true
+	}
+
+	return false
+}
+
+func (d *Detector) isBoundFeishuSender(msg notify.FeishuInboundMessage) bool {
+	root := strings.TrimSpace(d.cfg.RootDir)
+	if root == "" {
+		return false
+	}
+
+	store, err := notify.NewStore(notify.BindingsPath(root))
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Printf("load bindings store failed: %v", err)
+		}
+		return false
+	}
+
+	appID := strings.TrimSpace(msg.AppID)
+	openID := strings.TrimSpace(msg.OpenID)
+	if appID == "" || openID == "" {
+		return false
+	}
+
+	for _, b := range store.ListBindings() {
+		if !strings.EqualFold(strings.TrimSpace(b.Channel), "feishu") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(b.Status), notify.BindingStatusBound) {
+			continue
+		}
+		if strings.TrimSpace(b.AccountID) != appID {
+			continue
+		}
+		if strings.TrimSpace(b.SenderID) != openID {
+			continue
+		}
+		if !b.RemoteCommandEnabled {
+			if d.logger != nil {
+				d.logger.Printf("ignore feishu remote command: remote command disabled | app=%s openID=%s", appID, openID)
+			}
+			return false
+		}
+		return true
+	}
+
+	return false
+}
+
+func (d *Detector) isBoundWecomSender(msg notify.WecomInboundMessage) bool {
+	root := strings.TrimSpace(d.cfg.RootDir)
+	if root == "" {
+		return false
+	}
+
+	store, err := notify.NewStore(notify.BindingsPath(root))
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Printf("load bindings store failed: %v", err)
+		}
+		return false
+	}
+
+	botID := strings.TrimSpace(msg.BotID)
+	userID := strings.TrimSpace(msg.UserID)
+	if botID == "" || userID == "" {
+		return false
+	}
+
+	for _, b := range store.ListBindings() {
+		if !strings.EqualFold(strings.TrimSpace(b.Channel), "wecom") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(b.Status), notify.BindingStatusBound) {
+			continue
+		}
+		if strings.TrimSpace(b.AccountID) != botID {
+			continue
+		}
+		if strings.TrimSpace(b.SenderID) != userID {
+			continue
+		}
+		if !b.RemoteCommandEnabled {
+			if d.logger != nil {
+				d.logger.Printf("ignore wecom remote command: remote command disabled | bot=%s user=%s", botID, userID)
+			}
+			return false
+		}
+		return true
+	}
+
+	return false
+}
+
+func (d *Detector) executeRemoteCommand(action string, reply func(string)) {
+	if reply == nil {
+		return
+	}
+
+	probeBefore := d.probeOpenClaw(context.Background())
+	d.armFastProbeWindow(remoteCommandFastProbeSeconds)
+
+	var args []string
+	var startReply string
+
+	switch action {
+	case remoteCommandRestart:
+		if probeBefore == ProbeOnline {
+			args = []string{"gateway", "restart"}
+			startReply = "已收到远程重启命令，正在尝试重启 OpenClaw。"
+		} else {
+			args = []string{"gateway", "start"}
+			startReply = "当前检测为离线，已按启动命令处理，正在尝试拉起 OpenClaw。"
+		}
+	default:
+		if probeBefore == ProbeOnline {
+			reply("OpenClaw 当前已经在线，无需再次启动。")
+			return
+		}
+		args = []string{"gateway", "start"}
+		startReply = "已收到远程启动命令，正在尝试启动 OpenClaw。"
+	}
+
+	reply(startReply)
+
+	cmdCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	out, err := d.runOpenClaw(cmdCtx, args...)
+	cancel()
+
+	if err != nil {
+		msg := ""
+		if strings.TrimSpace(out) != "" {
+			msg = "启动命令执行失败：" + strings.TrimSpace(out)
+		} else {
+			msg = fmt.Sprintf("启动命令执行失败：%v", err)
+		}
+
+		msg = msg + "。如首次冷启动失败，可再次发送“启动openclaw”重试。"
+
+		d.dispatchEvent(context.Background(), protocol.EventGuardAnomaly, msg, map[string]string{
+			"component": "openclaw_remote_start_failed",
+			"action":    action,
+		})
+
+		reply(msg)
+		return
+	}
+
+	if d.waitForOpenClawOnline(remoteCommandVerifyTotalWait, remoteCommandVerifyStep) {
+		bg := context.Background()
+		d.ensureGuardRunning(bg)
+		d.ensureUIRunning(bg)
+		d.refreshAttachmentFlags(bg)
+		d.writeStatusFile()
+		reply("OpenClaw 已检测到在线，守护与面板正在同步恢复。")
+		return
+	}
+
+	msg := "启动命令已执行，但 20 秒内仍未检测到 OpenClaw 在线。若这是首次冷启动失败，可再次发送“启动openclaw”再试一次。"
+
+	d.dispatchEvent(context.Background(), protocol.EventGuardAnomaly, msg, map[string]string{
+		"component": "openclaw_remote_start_timeout",
+		"action":    action,
+	})
+
+	reply(msg)
+}
+
+func (d *Detector) replyTelegramRemoteCommand(msg notify.TelegramInboundMessage, text string) {
+	token := strings.TrimSpace(notify.GetTelegramToken())
+	if token == "" || msg.ChatID == 0 {
+		if d.logger != nil {
+			d.logger.Printf("skip telegram remote reply: token or chat missing")
+		}
+		return
+	}
+
+	ok, errMsg := notify.SendTelegramMessage(token, msg.ChatID, strings.TrimSpace(text))
+	if !ok && d.logger != nil {
+		d.logger.Printf("telegram remote reply failed: %s", errMsg)
+	}
+}
+
+func (d *Detector) replyFeishuRemoteCommand(msg notify.FeishuInboundMessage, text string) {
+	appID, appSecret := notify.GetFeishuCredentials()
+	if strings.TrimSpace(appID) == "" {
+		appID = strings.TrimSpace(msg.AppID)
+	}
+	if strings.TrimSpace(appID) == "" || strings.TrimSpace(appSecret) == "" || strings.TrimSpace(msg.OpenID) == "" {
+		if d.logger != nil {
+			d.logger.Printf("skip feishu remote reply: credentials or openID missing")
+		}
+		return
+	}
+
+	ok, errMsg := notify.SendFeishuMessage(appID, appSecret, strings.TrimSpace(msg.OpenID), strings.TrimSpace(text))
+	if !ok && d.logger != nil {
+		d.logger.Printf("feishu remote reply failed: %s", errMsg)
+	}
+}
+
+func (d *Detector) replyWecomRemoteCommand(msg notify.WecomInboundMessage, text string) {
+	sendBotID, secret := notify.GetWecomCredentials()
+	if strings.TrimSpace(sendBotID) == "" {
+		sendBotID = strings.TrimSpace(msg.BotID)
+	}
+	if strings.TrimSpace(sendBotID) == "" || strings.TrimSpace(secret) == "" || strings.TrimSpace(msg.UserID) == "" {
+		if d.logger != nil {
+			d.logger.Printf("skip wecom remote reply: credentials or user missing")
+		}
+		return
+	}
+
+	ok, errMsg := notify.SendWecomMessage(sendBotID, secret, strings.TrimSpace(msg.UserID), strings.TrimSpace(text))
+	if !ok && d.logger != nil {
+		d.logger.Printf("wecom remote reply failed: %s", errMsg)
+	}
+}
 func (d *Detector) dispatchEvent(ctx context.Context, eventType, message string, data map[string]string) {
 	if d.logger != nil {
 		d.logger.Printf("detector notify | type=%s message=%s", eventType, message)
@@ -666,10 +1171,13 @@ func (d *Detector) detectorStateString() string {
 		return "offline_confirmed"
 	case DetStateOffline:
 		return "offline"
+	case DetStateExiting:
+		return "exiting"
 	default:
 		return "unknown"
 	}
 }
+
 func (d *Detector) logf(format string, args ...interface{}) {
 	if d.logger == nil {
 		return
@@ -799,7 +1307,52 @@ func (d *Detector) probeIntervalSeconds() int {
 	}
 	return d.cfg.ProbeIntervalSeconds
 }
+func (d *Detector) currentProbeInterval() time.Duration {
+	base := time.Duration(d.probeIntervalSeconds()) * time.Second
 
+	d.fastProbeMu.Lock()
+	until := d.fastProbeUntil
+	d.fastProbeMu.Unlock()
+
+	if !until.IsZero() && time.Now().UTC().Before(until) {
+		return remoteCommandFastProbeInterval
+	}
+
+	return base
+}
+
+func (d *Detector) armFastProbeWindow(seconds int) {
+	if seconds <= 0 {
+		seconds = remoteCommandFastProbeSeconds
+	}
+
+	d.fastProbeMu.Lock()
+	d.fastProbeUntil = time.Now().UTC().Add(time.Duration(seconds) * time.Second)
+	d.fastProbeMu.Unlock()
+
+	if d.logger != nil {
+		d.logger.Printf("fast probe window armed for %d seconds", seconds)
+	}
+}
+
+func (d *Detector) waitForOpenClawOnline(totalWait, step time.Duration) bool {
+	if totalWait <= 0 {
+		totalWait = remoteCommandVerifyTotalWait
+	}
+	if step <= 0 {
+		step = remoteCommandVerifyStep
+	}
+
+	deadline := time.Now().Add(totalWait)
+	for time.Now().Before(deadline) {
+		if d.probeOpenClaw(context.Background()) == ProbeOnline {
+			return true
+		}
+		time.Sleep(step)
+	}
+
+	return d.probeOpenClaw(context.Background()) == ProbeOnline
+}
 func (d *Detector) healthyConfirmCount() int {
 	if d.cfg.HealthyConfirmCount <= 0 {
 		return 2

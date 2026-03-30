@@ -39,6 +39,8 @@ type UIApp struct {
 	telegramStatusLabel *walk.Label
 	telegramBoundLabel  *walk.Label
 	telegramTestLabel   *walk.Label
+	telegramNotifyCheck *walk.CheckBox
+	telegramRemoteCheck *walk.CheckBox
 
 	// Telegram 配对状态
 	telegramPairingWatcher *notify.TelegramPairingWatcher
@@ -54,6 +56,8 @@ type UIApp struct {
 	feishuStatusLabel   *walk.Label
 	feishuBoundLabel    *walk.Label
 	feishuTestLabel     *walk.Label
+	feishuNotifyCheck   *walk.CheckBox
+	feishuRemoteCheck   *walk.CheckBox
 	// Feishu 配对状态
 	feishuPairingWatcher *notify.FeishuPairingWatcher
 	feishuPairingCode    string
@@ -71,6 +75,8 @@ type UIApp struct {
 	wecomStatusLabel *walk.Label
 	wecomBoundLabel  *walk.Label
 	wecomTestLabel   *walk.Label
+	wecomNotifyCheck *walk.CheckBox
+	wecomRemoteCheck *walk.CheckBox
 
 	resultStatus *walk.Label
 	resultDetail *walk.Label
@@ -219,11 +225,32 @@ func (ui *UIApp) createMainWindow() error {
 											Label{AssignTo: &ui.telegramTestLabel, Text: "-"},
 										},
 									},
+									GroupBox{
+										Title:  "通知与远程控制",
+										Layout: VBox{},
+										Children: []Widget{
+											CheckBox{
+												AssignTo: &ui.telegramNotifyCheck,
+												Text:     "接收 Telegram 通知",
+												Checked:  true,
+											},
+											CheckBox{
+												AssignTo: &ui.telegramRemoteCheck,
+												Text:     "允许 Telegram 远程启动 OpenClaw",
+												Checked:  true,
+											},
+											Label{
+												Text:      "关闭通知后，该软件不再接收上下线/异常消息；绑定关系会保留。",
+												TextColor: 0x666666,
+											},
+										},
+									},
 									Composite{
 										Layout: HBox{},
 										Children: []Widget{
 											PushButton{Text: "测试连接", OnClicked: ui.handleTelegramTest},
 											PushButton{Text: "发送测试消息", OnClicked: ui.handleTelegramTestMsg},
+											PushButton{Text: "保存通知设置", OnClicked: ui.handleTelegramOptionsSave},
 											PushButton{Text: "解除绑定", OnClicked: ui.handleTelegramUnbind},
 											HSpacer{},
 										},
@@ -282,11 +309,32 @@ func (ui *UIApp) createMainWindow() error {
 											Label{AssignTo: &ui.feishuTestLabel, Text: "-"},
 										},
 									},
+									GroupBox{
+										Title:  "通知与远程控制",
+										Layout: VBox{},
+										Children: []Widget{
+											CheckBox{
+												AssignTo: &ui.feishuNotifyCheck,
+												Text:     "接收飞书通知",
+												Checked:  true,
+											},
+											CheckBox{
+												AssignTo: &ui.feishuRemoteCheck,
+												Text:     "允许飞书远程启动 OpenClaw",
+												Checked:  true,
+											},
+											Label{
+												Text:      "关闭通知后，该软件不再接收上下线/异常消息；绑定关系会保留。",
+												TextColor: 0x666666,
+											},
+										},
+									},
 									Composite{
 										Layout: HBox{},
 										Children: []Widget{
 											PushButton{Text: "测试连接", OnClicked: ui.handleFeishuTest},
 											PushButton{Text: "发送测试消息", OnClicked: ui.handleFeishuTestMsg},
+											PushButton{Text: "保存通知设置", OnClicked: ui.handleFeishuOptionsSave},
 											PushButton{Text: "解除绑定", OnClicked: ui.handleFeishuUnbind},
 											HSpacer{},
 										},
@@ -346,11 +394,32 @@ func (ui *UIApp) createMainWindow() error {
 											Label{AssignTo: &ui.wecomTestLabel, Text: "-"},
 										},
 									},
+									GroupBox{
+										Title:  "通知与远程控制",
+										Layout: VBox{},
+										Children: []Widget{
+											CheckBox{
+												AssignTo: &ui.wecomNotifyCheck,
+												Text:     "接收企业微信通知",
+												Checked:  true,
+											},
+											CheckBox{
+												AssignTo: &ui.wecomRemoteCheck,
+												Text:     "允许企业微信远程启动 OpenClaw",
+												Checked:  true,
+											},
+											Label{
+												Text:      "关闭通知后，该软件不再接收上下线/异常消息；绑定关系会保留。",
+												TextColor: 0x666666,
+											},
+										},
+									},
 									Composite{
 										Layout: HBox{},
 										Children: []Widget{
 											PushButton{Text: "测试连接", OnClicked: ui.handleWecomTest},
 											PushButton{Text: "发送测试消息", OnClicked: ui.handleWecomTestMsg},
+											PushButton{Text: "保存通知设置", OnClicked: ui.handleWecomOptionsSave},
 											PushButton{Text: "解除绑定", OnClicked: ui.handleWecomUnbind},
 											HSpacer{},
 										},
@@ -569,6 +638,30 @@ func (ui *UIApp) maybeShowTrayNotifications(snapshot StatusSnapshot) {
 }
 func (ui *UIApp) reloadStaticViews() {
 	notify.InitCredentialsStore(ui.cfg.RootDir)
+	if ui.telegramNotifyCheck != nil {
+		ui.telegramNotifyCheck.SetChecked(false)
+		ui.telegramNotifyCheck.SetEnabled(false)
+	}
+	if ui.telegramRemoteCheck != nil {
+		ui.telegramRemoteCheck.SetChecked(false)
+		ui.telegramRemoteCheck.SetEnabled(false)
+	}
+	if ui.feishuNotifyCheck != nil {
+		ui.feishuNotifyCheck.SetChecked(false)
+		ui.feishuNotifyCheck.SetEnabled(false)
+	}
+	if ui.feishuRemoteCheck != nil {
+		ui.feishuRemoteCheck.SetChecked(false)
+		ui.feishuRemoteCheck.SetEnabled(false)
+	}
+	if ui.wecomNotifyCheck != nil {
+		ui.wecomNotifyCheck.SetChecked(false)
+		ui.wecomNotifyCheck.SetEnabled(false)
+	}
+	if ui.wecomRemoteCheck != nil {
+		ui.wecomRemoteCheck.SetChecked(false)
+		ui.wecomRemoteCheck.SetEnabled(false)
+	}
 
 	ui.telegramStatusLabel.SetText("未绑定")
 	ui.telegramBoundLabel.SetText("-")
@@ -611,6 +704,14 @@ func (ui *UIApp) reloadStaticViews() {
 					ui.telegramTestLabel.SetText("待测试")
 				}
 			}
+			if ui.telegramNotifyCheck != nil {
+				ui.telegramNotifyCheck.SetChecked(b.NotifyEnabled)
+				ui.telegramNotifyCheck.SetEnabled(true)
+			}
+			if ui.telegramRemoteCheck != nil {
+				ui.telegramRemoteCheck.SetChecked(b.RemoteCommandEnabled)
+				ui.telegramRemoteCheck.SetEnabled(true)
+			}
 			ui.telegramVerifiedBotID = b.AccountID
 
 		case b.Channel == "feishu" && b.Status == "bound":
@@ -629,6 +730,14 @@ func (ui *UIApp) reloadStaticViews() {
 				} else {
 					ui.feishuTestLabel.SetText("待测试")
 				}
+			}
+			if ui.feishuNotifyCheck != nil {
+				ui.feishuNotifyCheck.SetChecked(b.NotifyEnabled)
+				ui.feishuNotifyCheck.SetEnabled(true)
+			}
+			if ui.feishuRemoteCheck != nil {
+				ui.feishuRemoteCheck.SetChecked(b.RemoteCommandEnabled)
+				ui.feishuRemoteCheck.SetEnabled(true)
 			}
 			ui.feishuVerifiedAppID = b.AccountID
 
@@ -649,9 +758,61 @@ func (ui *UIApp) reloadStaticViews() {
 					ui.wecomTestLabel.SetText("待测试")
 				}
 			}
+			if ui.wecomNotifyCheck != nil {
+				ui.wecomNotifyCheck.SetChecked(b.NotifyEnabled)
+				ui.wecomNotifyCheck.SetEnabled(true)
+			}
+			if ui.wecomRemoteCheck != nil {
+				ui.wecomRemoteCheck.SetChecked(b.RemoteCommandEnabled)
+				ui.wecomRemoteCheck.SetEnabled(true)
+			}
 			ui.wecomVerifiedBotID = b.AccountID
 		}
 	}
+}
+func (ui *UIApp) saveBoundChannelOptions(channel string, notifyEnabled, remoteEnabled bool) error {
+	bindingsPath := notify.BindingsPath(ui.cfg.RootDir)
+	store, err := notify.NewStore(bindingsPath)
+	if err != nil {
+		return err
+	}
+
+	bindings := store.ListBindings()
+	for _, b := range bindings {
+		if strings.EqualFold(strings.TrimSpace(b.Channel), channel) &&
+			strings.EqualFold(strings.TrimSpace(b.Status), notify.BindingStatusBound) {
+			return store.UpdateBindingOptions(b.Channel, b.AccountID, b.SenderID, notifyEnabled, remoteEnabled)
+		}
+	}
+
+	return fmt.Errorf("%s 尚未绑定", channel)
+}
+
+func (ui *UIApp) handleTelegramOptionsSave() {
+	if err := ui.saveBoundChannelOptions("telegram", ui.telegramNotifyCheck.Checked(), ui.telegramRemoteCheck.Checked()); err != nil {
+		ui.showResult("失败", "保存 Telegram 通知设置失败", err.Error())
+		return
+	}
+	ui.reloadStaticViews()
+	ui.showResult("成功", "Telegram 通知设置已保存", "")
+}
+
+func (ui *UIApp) handleFeishuOptionsSave() {
+	if err := ui.saveBoundChannelOptions("feishu", ui.feishuNotifyCheck.Checked(), ui.feishuRemoteCheck.Checked()); err != nil {
+		ui.showResult("失败", "保存飞书通知设置失败", err.Error())
+		return
+	}
+	ui.reloadStaticViews()
+	ui.showResult("成功", "飞书通知设置已保存", "")
+}
+
+func (ui *UIApp) handleWecomOptionsSave() {
+	if err := ui.saveBoundChannelOptions("wecom", ui.wecomNotifyCheck.Checked(), ui.wecomRemoteCheck.Checked()); err != nil {
+		ui.showResult("失败", "保存企业微信通知设置失败", err.Error())
+		return
+	}
+	ui.reloadStaticViews()
+	ui.showResult("成功", "企业微信通知设置已保存", "")
 }
 
 // ===== 机器人 Tab 操作处理 =====
@@ -1068,6 +1229,7 @@ func (ui *UIApp) handleTelegramUnbind() {
 			ui.telegramVerifiedBotID = ""
 			ui.telegramVerifiedToken = ""
 			ui.telegramPairingResult = nil
+			ui.reloadStaticViews()
 		})
 	}()
 }
@@ -1157,6 +1319,7 @@ func (ui *UIApp) handleFeishuUnbind() {
 				ui.feishuPairingWatcher.Stop()
 				ui.feishuPairingWatcher = nil
 			}
+			ui.reloadStaticViews()
 		})
 	}()
 }
@@ -1248,6 +1411,7 @@ func (ui *UIApp) handleWecomUnbind() {
 				ui.wecomPairingWatcher = nil
 			}
 			notify.StopWecomBridge()
+			ui.reloadStaticViews()
 		})
 	}()
 }

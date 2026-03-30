@@ -10,11 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
-	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
-	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
-	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
 const feishuGetUserURLPrefix = "https://open.feishu.cn/open-apis/contact/v3/users/"
@@ -24,24 +19,21 @@ type FeishuPairingWatcher struct {
 	appSecret   string
 	pairingCode string
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	resultCh    chan *PairingResult
+	stopCh      chan struct{}
+	unsubscribe func()
 
-	resultCh  chan *PairingResult
-	startOnce sync.Once
-	doneOnce  sync.Once
+	startOnce  sync.Once
+	finishOnce sync.Once
 }
 
 func NewFeishuPairingWatcher(appID, appSecret, pairingCode string) *FeishuPairingWatcher {
-	ctx, cancel := context.WithCancel(context.Background())
-
 	return &FeishuPairingWatcher{
 		appID:       strings.TrimSpace(appID),
 		appSecret:   strings.TrimSpace(appSecret),
 		pairingCode: strings.ToUpper(strings.TrimSpace(pairingCode)),
-		ctx:         ctx,
-		cancel:      cancel,
 		resultCh:    make(chan *PairingResult, 1),
+		stopCh:      make(chan struct{}, 1),
 	}
 }
 
@@ -49,8 +41,65 @@ func (w *FeishuPairingWatcher) Start() {
 	if w == nil {
 		return
 	}
+
 	w.startOnce.Do(func() {
-		go w.run()
+		if strings.TrimSpace(w.appID) == "" {
+			w.finish(&PairingResult{
+				Success:   false,
+				AccountID: "",
+				Error:     "feishu app id 不能为空",
+			})
+			return
+		}
+		if strings.TrimSpace(w.appSecret) == "" {
+			w.finish(&PairingResult{
+				Success:   false,
+				AccountID: w.appID,
+				Error:     "feishu app secret 不能为空",
+			})
+			return
+		}
+		if strings.TrimSpace(w.pairingCode) == "" {
+			w.finish(&PairingResult{
+				Success:   false,
+				AccountID: w.appID,
+				Error:     "pairing code 不能为空",
+			})
+			return
+		}
+
+		if err := EnsureFeishuInboundListener(w.appID, w.appSecret); err != nil {
+			w.finish(&PairingResult{
+				Success:   false,
+				AccountID: w.appID,
+				Error:     "启动飞书入站监听失败: " + err.Error(),
+			})
+			return
+		}
+
+		w.unsubscribe = RegisterFeishuInboundSink(func(msg FeishuInboundMessage) {
+			w.handleInbound(msg)
+		})
+
+		go func() {
+			timer := time.NewTimer(defaultPendingBindingTTL)
+			defer timer.Stop()
+
+			select {
+			case <-w.stopCh:
+				w.finish(&PairingResult{
+					Success:   false,
+					AccountID: w.appID,
+					Error:     fmt.Sprintf("配对超时（%d秒内未收到配对消息）", int(defaultPendingBindingTTL.Seconds())),
+				})
+			case <-timer.C:
+				w.finish(&PairingResult{
+					Success:   false,
+					AccountID: w.appID,
+					Error:     fmt.Sprintf("配对超时（%d秒内未收到配对消息）", int(defaultPendingBindingTTL.Seconds())),
+				})
+			}
+		}()
 	})
 }
 
@@ -58,7 +107,10 @@ func (w *FeishuPairingWatcher) Stop() {
 	if w == nil {
 		return
 	}
-	w.finish(nil)
+	select {
+	case w.stopCh <- struct{}{}:
+	default:
+	}
 }
 
 func (w *FeishuPairingWatcher) ResultCh() <-chan *PairingResult {
@@ -70,103 +122,28 @@ func (w *FeishuPairingWatcher) ResultCh() <-chan *PairingResult {
 	return w.resultCh
 }
 
-func (w *FeishuPairingWatcher) run() {
-	if strings.TrimSpace(w.appID) == "" {
-		w.finish(&PairingResult{
-			Success:   false,
-			AccountID: "",
-			Error:     "feishu app id 不能为空",
-		})
+func (w *FeishuPairingWatcher) handleInbound(msg FeishuInboundMessage) {
+	if w == nil {
 		return
 	}
-	if strings.TrimSpace(w.appSecret) == "" {
-		w.finish(&PairingResult{
-			Success:   false,
-			AccountID: w.appID,
-			Error:     "feishu app secret 不能为空",
-		})
+	if strings.TrimSpace(msg.AppID) != strings.TrimSpace(w.appID) {
 		return
 	}
-	if strings.TrimSpace(w.pairingCode) == "" {
-		w.finish(&PairingResult{
-			Success:   false,
-			AccountID: w.appID,
-			Error:     "pairing code 不能为空",
-		})
+	if !strings.EqualFold(strings.TrimSpace(msg.MsgType), "text") {
 		return
 	}
 
-	eventHandler := dispatcher.NewEventDispatcher("", "").
-		OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
-			w.handleMessageEvent(ctx, event)
-			return nil
-		})
-
-	client := larkws.NewClient(
-		w.appID,
-		w.appSecret,
-		larkws.WithEventHandler(eventHandler),
-		larkws.WithAutoReconnect(false),
-		larkws.WithLogLevel(larkcore.LogLevelError),
-	)
-
-	timeoutCtx, timeoutCancel := context.WithTimeout(w.ctx, defaultPendingBindingTTL)
-	defer timeoutCancel()
-
-	go func() {
-		err := client.Start(timeoutCtx)
-		if err != nil && timeoutCtx.Err() == nil {
-			w.finish(&PairingResult{
-				Success:   false,
-				AccountID: w.appID,
-				Error:     fmt.Sprintf("飞书长连接启动失败: %v", err),
-			})
-		}
-	}()
-
-	<-timeoutCtx.Done()
-	if timeoutCtx.Err() == context.DeadlineExceeded {
-		w.finish(&PairingResult{
-			Success:   false,
-			AccountID: w.appID,
-			Error:     fmt.Sprintf("配对超时（%d秒内未收到配对消息）", int(defaultPendingBindingTTL.Seconds())),
-		})
-	}
-}
-
-func (w *FeishuPairingWatcher) handleMessageEvent(ctx context.Context, event *larkim.P2MessageReceiveV1) {
-	if w == nil || event == nil || event.Event == nil {
-		return
-	}
-	if w.ctx.Err() != nil {
-		return
-	}
-
-	msg := event.Event.Message
-	sender := event.Event.Sender
-	if msg == nil || sender == nil || sender.SenderId == nil {
-		return
-	}
-
-	msgType := derefString(msg.MessageType)
-	if msgType != "" && !strings.EqualFold(msgType, "text") {
-		return
-	}
-
-	text := extractFeishuTextMessage(derefString(msg.Content))
+	text := strings.TrimSpace(msg.Content)
 	if !matchFeishuPairingCode(text, w.pairingCode) {
 		return
 	}
 
-	openID := ""
-	if sender.SenderId.OpenId != nil {
-		openID = strings.TrimSpace(*sender.SenderId.OpenId)
-	}
+	openID := strings.TrimSpace(msg.OpenID)
 	if openID == "" {
 		return
 	}
 
-	displayName := w.resolveDisplayName(ctx, openID)
+	displayName := strings.TrimSpace(msg.DisplayName)
 	if displayName == "" {
 		displayName = openID
 	}
@@ -179,24 +156,13 @@ func (w *FeishuPairingWatcher) handleMessageEvent(ctx context.Context, event *la
 	})
 }
 
-func (w *FeishuPairingWatcher) resolveDisplayName(ctx context.Context, openID string) string {
-	openID = strings.TrimSpace(openID)
-	if openID == "" {
-		return ""
-	}
-
-	name, err := getFeishuUserName(ctx, w.appID, w.appSecret, openID)
-	if err != nil {
-		return openID
-	}
-	if strings.TrimSpace(name) == "" {
-		return openID
-	}
-	return strings.TrimSpace(name)
-}
-
 func (w *FeishuPairingWatcher) finish(result *PairingResult) {
-	w.doneOnce.Do(func() {
+	w.finishOnce.Do(func() {
+		if w.unsubscribe != nil {
+			w.unsubscribe()
+			w.unsubscribe = nil
+		}
+
 		if result != nil {
 			select {
 			case w.resultCh <- result:
@@ -204,7 +170,6 @@ func (w *FeishuPairingWatcher) finish(result *PairingResult) {
 			}
 		}
 		close(w.resultCh)
-		w.cancel()
 	})
 }
 

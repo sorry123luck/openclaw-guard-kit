@@ -285,11 +285,19 @@ func resolveBoundWecomUserID() string {
 
 	bindings := store.ListBindings()
 	for _, binding := range bindings {
-		if strings.EqualFold(strings.TrimSpace(binding.Channel), "wecom") &&
-			strings.EqualFold(strings.TrimSpace(binding.Status), BindingStatusBound) &&
-			strings.TrimSpace(binding.SenderID) != "" {
-			return strings.TrimSpace(binding.SenderID)
+		if !strings.EqualFold(strings.TrimSpace(binding.Channel), "wecom") {
+			continue
 		}
+		if !strings.EqualFold(strings.TrimSpace(binding.Status), BindingStatusBound) {
+			continue
+		}
+		if !binding.NotifyEnabled {
+			continue
+		}
+		if strings.TrimSpace(binding.SenderID) == "" {
+			continue
+		}
+		return strings.TrimSpace(binding.SenderID)
 	}
 
 	return strings.TrimSpace(os.Getenv("WECOM_USER_ID"))

@@ -11,6 +11,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"openclaw-guard-kit/internal/protocol"
@@ -19,6 +21,287 @@ import (
 // TelegramNotifier sends messages via Telegram Bot API.
 // It reads the token and chat ID from the unified store.
 type TelegramNotifier struct{}
+type telegramChat struct {
+	ID        int64  `json:"id"`
+	Title     string `json:"title"`
+	Username  string `json:"username"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+}
+
+type telegramUser struct {
+	ID        int64  `json:"id"`
+	Username  string `json:"username"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+}
+
+type TelegramInboundMessage struct {
+	BotID       string
+	ChatID      int64
+	DisplayName string
+	Text        string
+	ReceivedAt  time.Time
+}
+
+type TelegramInboundSink func(TelegramInboundMessage)
+
+var (
+	telegramSinkMu       sync.Mutex
+	telegramSinkSeq      int64
+	telegramInboundSinks = map[int64]TelegramInboundSink{}
+)
+
+type telegramPollingState struct {
+	mu      sync.Mutex
+	token   string
+	botID   string
+	running bool
+	cancel  context.CancelFunc
+}
+
+var globalTelegramPolling = &telegramPollingState{}
+
+func RegisterTelegramInboundSink(fn TelegramInboundSink) func() {
+	if fn == nil {
+		return func() {}
+	}
+
+	id := atomic.AddInt64(&telegramSinkSeq, 1)
+
+	telegramSinkMu.Lock()
+	telegramInboundSinks[id] = fn
+	telegramSinkMu.Unlock()
+
+	return func() {
+		telegramSinkMu.Lock()
+		delete(telegramInboundSinks, id)
+		telegramSinkMu.Unlock()
+	}
+}
+
+func publishTelegramInboundMessage(msg TelegramInboundMessage) {
+	telegramSinkMu.Lock()
+	sinks := make([]TelegramInboundSink, 0, len(telegramInboundSinks))
+	for _, fn := range telegramInboundSinks {
+		sinks = append(sinks, fn)
+	}
+	telegramSinkMu.Unlock()
+
+	for _, fn := range sinks {
+		func(s TelegramInboundSink) {
+			defer func() { _ = recover() }()
+			s(msg)
+		}(fn)
+	}
+}
+
+func EnsureTelegramInboundPolling(token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("telegram token is empty")
+	}
+
+	botID, err := getTelegramBotID(token)
+	if err != nil {
+		return err
+	}
+
+	s := globalTelegramPolling
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.running && s.token == token {
+		return nil
+	}
+
+	s.stopLocked()
+	s.startLocked(token, botID)
+	return nil
+}
+
+func StopTelegramInboundPolling() {
+	s := globalTelegramPolling
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopLocked()
+}
+
+func getTelegramBotID(token string) (string, error) {
+	u := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
+	resp, err := http.Get(u)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("getMe returned %s", resp.Status)
+	}
+
+	var data struct {
+		Ok     bool `json:"ok"`
+		Result struct {
+			ID int64 `json:"id"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", err
+	}
+	if !data.Ok {
+		return "", fmt.Errorf("telegram getMe returned not ok")
+	}
+
+	return strconv.FormatInt(data.Result.ID, 10), nil
+}
+
+func getTelegramCurrentOffset(token string) int64 {
+	u := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?timeout=0", token)
+	resp, err := http.Get(u)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+
+	var updates struct {
+		Ok     bool `json:"ok"`
+		Result []struct {
+			UpdateID int64 `json:"update_id"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&updates); err != nil {
+		return 0
+	}
+	if !updates.Ok {
+		return 0
+	}
+
+	var latest int64
+	for _, upd := range updates.Result {
+		if upd.UpdateID > latest {
+			latest = upd.UpdateID
+		}
+	}
+	return latest
+}
+
+func (s *telegramPollingState) startLocked(token, botID string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.token = token
+	s.botID = botID
+	s.running = true
+	s.cancel = cancel
+
+	offset := getTelegramCurrentOffset(token)
+	go s.run(ctx, token, botID, offset)
+}
+
+func (s *telegramPollingState) stopLocked() {
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	s.running = false
+	s.token = ""
+	s.botID = ""
+}
+
+func (s *telegramPollingState) run(ctx context.Context, token, botID string, offset int64) {
+	client := &http.Client{Timeout: 35 * time.Second}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		v := url.Values{}
+		v.Set("offset", strconv.FormatInt(offset+1, 10))
+		v.Set("timeout", "30")
+
+		u := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?%s", token, v.Encode())
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var updates struct {
+			Ok     bool `json:"ok"`
+			Result []struct {
+				UpdateID int64 `json:"update_id"`
+				Message  struct {
+					Chat telegramChat `json:"chat"`
+					From telegramUser `json:"from"`
+					Text string       `json:"text"`
+				} `json:"message"`
+			} `json:"result"`
+		}
+
+		err = json.NewDecoder(resp.Body).Decode(&updates)
+		resp.Body.Close()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if !updates.Ok {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		for _, upd := range updates.Result {
+			if upd.UpdateID > offset {
+				offset = upd.UpdateID
+			}
+
+			text := strings.TrimSpace(upd.Message.Text)
+			if upd.Message.Chat.ID == 0 || text == "" {
+				continue
+			}
+
+			publishTelegramInboundMessage(TelegramInboundMessage{
+				BotID:       botID,
+				ChatID:      upd.Message.Chat.ID,
+				DisplayName: extractTelegramDisplayName(upd.Message.Chat, upd.Message.From),
+				Text:        text,
+				ReceivedAt:  time.Now(),
+			})
+		}
+	}
+}
+
+func extractTelegramDisplayName(chat telegramChat, from telegramUser) string {
+	if from.FirstName != "" {
+		name := from.FirstName
+		if from.LastName != "" {
+			name += " " + from.LastName
+		}
+		return name
+	}
+
+	if from.Username != "" {
+		return "@" + from.Username
+	}
+
+	if chat.Title != "" {
+		return chat.Title
+	}
+
+	return strconv.FormatInt(chat.ID, 10)
+}
 
 // Notify sends a formatted event message to the bound chat.
 // It gets the token from credentials store and chat ID from bindings store.
@@ -42,15 +325,23 @@ func (t TelegramNotifier) Notify(ctx context.Context, e protocol.Event) error {
 	if store != nil {
 		bindings := store.ListBindings()
 		for _, binding := range bindings {
-			if binding.Channel == "telegram" && binding.Status == BindingStatusBound {
-				parsedID, err := strconv.ParseInt(binding.SenderID, 10, 64)
-				if err != nil {
-					log.Printf("telegram notifier: invalid chatID in binding: %v", err)
-					continue
-				}
-				chatID = parsedID
-				break
+			if !strings.EqualFold(strings.TrimSpace(binding.Channel), "telegram") {
+				continue
 			}
+			if !strings.EqualFold(strings.TrimSpace(binding.Status), BindingStatusBound) {
+				continue
+			}
+			if !binding.NotifyEnabled {
+				continue
+			}
+
+			parsedID, err := strconv.ParseInt(strings.TrimSpace(binding.SenderID), 10, 64)
+			if err != nil {
+				log.Printf("telegram notifier: invalid chatID in binding: %v", err)
+				continue
+			}
+			chatID = parsedID
+			break
 		}
 	}
 
