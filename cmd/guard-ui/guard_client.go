@@ -122,6 +122,8 @@ func mapDetectorState(v string) string {
 		return "离线确认中"
 	case "offline":
 		return "离线"
+	case "exiting":
+		return "退出中"
 	default:
 		return "未知"
 	}

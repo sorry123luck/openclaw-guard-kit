@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -122,7 +123,17 @@ type detectorStatusFile struct {
 type startupProtectFile struct {
 	Until time.Time `json:"until"`
 }
+type gatewayPortCacheFile struct {
+	Host      string    `json:"host"`
+	Port      int       `json:"port"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
 
+var gatewayPortPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(?:ws|wss|http|https|tcp)://(?:127\.0\.0\.1|localhost|[^\s/:]+):(\d{2,5})\b`),
+	regexp.MustCompile(`(?i)\b(?:127\.0\.0\.1|localhost):(\d{2,5})\b`),
+	regexp.MustCompile(`(?i)\bport[:=\s]+(\d{2,5})\b`),
+}
 func NewDetector(logger *log.Logger, cfg DetectorConfig, guardExePath, guardUIExePath string) *Detector {
 	notify.SetRootDir(cfg.RootDir)
 	notify.InitCredentialsStore(cfg.RootDir)
@@ -159,6 +170,11 @@ func (d *Detector) beginShutdown(message string) {
 	if d.logger != nil {
 		d.logger.Printf("%s", message)
 	}
+
+	d.dispatchEvent(context.Background(), "detector.exiting", message, map[string]string{
+		"component": "detector",
+		"phase":     "shutdown",
+	})
 }
 
 func (d *Detector) shutdown(ctx context.Context) error {
@@ -179,27 +195,31 @@ func (d *Detector) Run(ctx context.Context) error {
 	defer d.unregisterRemoteCommandHooks()
 
 	d.state = DetStateStarting
-	d.tick(ctx)
-
-	ticker := time.NewTicker(time.Duration(d.probeIntervalSeconds()) * time.Second)
-	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return d.shutdown(ctx)
+		default:
+		}
 
-		case <-ticker.C:
-			// 关键修复：
-			// Ctrl+C 时如果 ctx.Done 和 ticker 同时到达，不要再继续走一次 tick，
-			// 否则可能把 detector 自己退出误发成 OpenClaw 正在关闭。
+		d.tick(ctx)
+
+		wait := d.currentProbeInterval()
+		timer := time.NewTimer(wait)
+
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return d.shutdown(ctx)
+
+		case <-timer.C:
 			if ctx.Err() != nil {
 				return d.shutdown(ctx)
 			}
 			if d.shutdownRequested {
 				return d.shutdown(ctx)
 			}
-			d.tick(ctx)
 		}
 	}
 }
@@ -1095,19 +1115,174 @@ func findProcessPIDByImage(imageName string) int {
 }
 
 func (d *Detector) probeOpenClaw(ctx context.Context) ProbeStatus {
+	// 1) 用户手动指定了固定端口：直接按固定端口探测
 	if d.cfg.GatewayPort > 0 {
 		return d.probeGatewayTCP(ctx)
 	}
+
+	// 2) 先尝试本地缓存端口
+	if cachedPort := d.loadCachedGatewayPort(); cachedPort > 0 {
+		if d.probeGatewayTCPPort(d.gatewayHostValue(), cachedPort) == ProbeOnline {
+			return ProbeOnline
+		}
+		d.clearCachedGatewayPort()
+	}
+
+	// 3) 缓存不可用时，尝试动态发现端口
+	if _, ok := d.discoverGatewayPort(ctx); ok {
+		return ProbeOnline
+	}
+
+	// 4) 最后再回退到旧的 CLI fallback
 	return d.probeGatewayFallback(ctx)
 }
 
 func (d *Detector) probeGatewayTCP(_ context.Context) ProbeStatus {
+	return d.probeGatewayTCPPort(d.gatewayHostValue(), d.cfg.GatewayPort)
+}
+func (d *Detector) gatewayHostValue() string {
 	host := strings.TrimSpace(d.cfg.GatewayHost)
+	if host == "" {
+		return "127.0.0.1"
+	}
+	return host
+}
+
+func (d *Detector) gatewayPortCachePath() string {
+	if strings.TrimSpace(d.cfg.RootDir) == "" {
+		return ""
+	}
+	return filepath.Join(d.cfg.RootDir, ".guard-state", "gateway-port-cache.json")
+}
+
+func (d *Detector) loadCachedGatewayPort() int {
+	path := d.gatewayPortCachePath()
+	if path == "" {
+		return 0
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+
+	var payload gatewayPortCacheFile
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return 0
+	}
+
+	if payload.Port <= 0 || payload.Port > 65535 {
+		return 0
+	}
+
+	host := strings.TrimSpace(payload.Host)
+	if host != "" && !strings.EqualFold(host, d.gatewayHostValue()) {
+		return 0
+	}
+
+	return payload.Port
+}
+
+func (d *Detector) saveCachedGatewayPort(port int) {
+	// 用户手动指定固定端口时，不覆盖手动配置
+	if d.cfg.GatewayPort > 0 {
+		return
+	}
+	if port <= 0 || port > 65535 {
+		return
+	}
+
+	path := d.gatewayPortCachePath()
+	if path == "" {
+		return
+	}
+
+	payload := gatewayPortCacheFile{
+		Host:      d.gatewayHostValue(),
+		Port:      port,
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+
+	if d.logger != nil {
+		d.logger.Printf("cached gateway port: %d", port)
+	}
+}
+
+func (d *Detector) clearCachedGatewayPort() {
+	path := d.gatewayPortCachePath()
+	if path == "" {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+func parseGatewayPortFromText(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+
+	for _, re := range gatewayPortPatterns {
+		match := re.FindStringSubmatch(text)
+		if len(match) < 2 {
+			continue
+		}
+
+		port, err := strconv.Atoi(strings.TrimSpace(match[1]))
+		if err == nil && port > 0 && port <= 65535 {
+			return port
+		}
+	}
+
+	return 0
+}
+
+func (d *Detector) discoverGatewayPort(ctx context.Context) (int, bool) {
+	// 不带 --require-rpc，尽量拿到更完整的状态文本用于解析端口
+	out, err := d.runOpenClaw(ctx, "gateway", "status")
+	if err != nil && strings.TrimSpace(out) == "" {
+		return 0, false
+	}
+
+	port := parseGatewayPortFromText(out)
+	if port <= 0 {
+		return 0, false
+	}
+
+	// 解析到端口后，再做一次真实 TCP 连接确认
+	if d.probeGatewayTCPPort(d.gatewayHostValue(), port) != ProbeOnline {
+		return 0, false
+	}
+
+	d.saveCachedGatewayPort(port)
+	return port, true
+}
+
+func (d *Detector) probeGatewayTCPPort(host string, port int) ProbeStatus {
+	host = strings.TrimSpace(host)
 	if host == "" {
 		host = "127.0.0.1"
 	}
+	if port <= 0 || port > 65535 {
+		return ProbeOffline
+	}
 
-	addr := net.JoinHostPort(host, strconv.Itoa(d.cfg.GatewayPort))
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
 		return ProbeOffline
@@ -1115,7 +1290,6 @@ func (d *Detector) probeGatewayTCP(_ context.Context) ProbeStatus {
 	_ = conn.Close()
 	return ProbeOnline
 }
-
 func (d *Detector) probeGatewayFallback(ctx context.Context) ProbeStatus {
 	out, err := d.runOpenClaw(ctx, "gateway", "status", "--require-rpc")
 	if err == nil {

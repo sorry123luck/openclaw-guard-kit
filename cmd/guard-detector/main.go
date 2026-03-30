@@ -49,7 +49,7 @@ func main() {
 	guardUIExePath := fs.String("guard-ui-exe", "", "guard-ui.exe 路径")
 	openclawPath := fs.String("openclaw", "", "openclaw.exe 路径")
 	gatewayHost := fs.String("gateway-host", "127.0.0.1", "gateway host")
-	gatewayPort := fs.Int("gateway-port", 0, "gateway port (0 = use CLI fallback)")
+	gatewayPort := fs.Int("gateway-port", 0, "gateway port (0 = auto detect + cache + fallback)")
 	logLevel := fs.String("log-level", "info", "log level")
 
 	args := normalizeDetectorArgs(os.Args[1:])
