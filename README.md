@@ -4,7 +4,7 @@
 
 [![Platform](https://img.shields.io/badge/platform-Windows-blue?style=flat-square)](#)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.25-blue?style=flat-square)](#开发)
+[![Go](https://img.shields.io/badge/Go-1.25+-blue?style=flat-square)](#开发)
 
 ---
 
@@ -101,9 +101,9 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\i
 
 | 平台 | 凭证 | 绑定方式 |
 |------|------|----------|
-| Telegram | Bot Token | 扫码绑定 |
-| 飞书 | App ID + App Secret | OAuth 绑定 |
-| 企业微信 | Corp ID + Agent ID + Secret | 扫码绑定 |
+| Telegram | Bot Token | 机器人会话绑定 |
+| 飞书 | App ID + App Secret | 应用消息绑定 |
+| 企业微信 | Corp ID + Agent ID + Secret | 企业应用会话绑定 |
 
 已绑定用户可发送远程命令：
 
@@ -146,7 +146,7 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\i
 
 ## 命令行接口
 
-> 注意：以下全部是 `guard.exe` 的子命令。detector 不对外暴露独立 CLI。
+> 以下列出 `guard.exe` 的常用子命令；`guard-detector.exe` 通常由安装器/自启动流程管理，普通用户一般无需手动调用。
 
 ### 核心命令
 
@@ -313,7 +313,7 @@ openclaw-guard-kit/
 
 ### 技术栈
 
-- Go 1.25
+- Go 1.25+
 - `github.com/Microsoft/go-winio` — Windows Named Pipe
 - `github.com/larksuite/oapi-sdk-go/v3` — 飞书 SDK
 - `github.com/lxn/walk` — Windows GUI
