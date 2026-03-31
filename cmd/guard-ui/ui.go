@@ -1320,6 +1320,7 @@ func (ui *UIApp) handleFeishuUnbind() {
 				ui.feishuPairingWatcher = nil
 			}
 			ui.reloadStaticViews()
+
 		})
 	}()
 }

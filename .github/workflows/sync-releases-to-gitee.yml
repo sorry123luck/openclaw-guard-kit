@@ -80,7 +80,7 @@ jobs:
                   f.write(dl_resp.read())
           PY
 
-        - name: Push GitHub repo to Gitee
+      - name: Push GitHub repo to Gitee
         env:
           GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
