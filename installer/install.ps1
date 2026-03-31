@@ -51,7 +51,18 @@ function Get-LatestAssetUrl {
     [string]$Name,
     [string]$Asset
   )
-  return "https://github.com/$Owner/$Name/releases/latest/download/$Asset"
+  # Gitee API - get latest release tag (public repo, no token needed)
+  $apiUrl = "https://gitee.com/api/v5/repos/$Owner/$Name/releases/latest"
+  try {
+    $resp = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -TimeoutSec 10
+    if ($resp.tag_name) {
+      return "https://gitee.com/$Owner/$Name/releases/download/$($resp.tag_name)/$Asset"
+    }
+  } catch {
+    Write-Host "WARN: Failed to fetch latest release from Gitee, using hardcoded tag"
+  }
+  # Fallback to hardcoded tag
+  return "https://gitee.com/$Owner/$Name/releases/download/v.1.0.0/$Asset"
 }
 
 function Expand-SingleRootIfPresent {

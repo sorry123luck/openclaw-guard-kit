@@ -33,11 +33,14 @@
 
 ### 一键安装
 
-从 GitHub releases 自动下载并安装最新版本：
+从 Gitee（国内镜像）自动下载并安装最新版本：
 
 ```powershell
-irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
 ```
+
+> 国际用户可使用 GitHub（国内访问慢）：
+> `irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex`
 
 - 安装路径：`~/.openclaw-guard-kit/`
 - OpenClaw 路径：`~/.openclaw/`
