@@ -201,10 +201,16 @@ guard.exe test-wecom-message --user-id <userId> --content <text>
 
 ## 远程安装与升级
 
+> 安装器默认优先从 **Gitee** 下载，Gitee 不可用时自动切换到 **GitHub**，无需手动干预。
+
 ### 远程安装（本地执行）
 
-一行命令全自动安装：
+**国内用户（一键安装）：**
+```powershell
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
+```
 
+**国际用户：**
 ```powershell
 irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex
 ```
@@ -215,22 +221,16 @@ irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/
 |------|--------|------|
 | `-InstallDir` | `~/.openclaw-guard-kit/` | 安装目录 |
 | `-OpenClawRoot` | `~/.openclaw/` | OpenClaw 根目录 |
-
-指定自定义路径：
-
-```powershell
-irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex `
-  -InstallDir "D:\guard-kit" `
-  -OpenClawRoot "D:\openclaw"
-```
+| `-PrimarySource` | `gitee` | 首选源，可选 `github` |
 
 ### 远程升级
 
+升级脚本同样支持双源自动回退：
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\installer\update.ps1"
 ```
 
-支持参数：`-InstallDir` / `-RepoOwner` / `-RepoName` / `-AssetName`
+支持参数：`-InstallDir` / `-PrimarySource gitee|github`
 
 ### 手动下载安装
 
@@ -344,6 +344,14 @@ OpenClaw Guard Kit is a **Windows-only** external guardian and recovery tool for
 
 ### Quick Install
 
+> The installer automatically falls back to GitHub if Gitee is unavailable.
+
+**Recommended (Gitee — fast in China):**
+```powershell
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
+```
+
+**International (GitHub):**
 ```powershell
 irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex
 ```
@@ -353,6 +361,7 @@ irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/
 
 ### Upgrade
 
+The updater also supports dual-source fallback:
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\installer\update.ps1"
 ```
@@ -389,22 +398,31 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\i
 
 ### Remote Install Options
 
-**One-liner (recommended):**
+**One-liner — Gitee (China, recommended):**
+```powershell
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
+```
+
+**One-liner — GitHub (international):**
 ```powershell
 irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex
 ```
 
+Both installers automatically fall back to the other source if the primary is unavailable.
+
 **With custom paths:**
 ```powershell
-irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex `
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex `
   -InstallDir "D:\guard-kit" `
   -OpenClawRoot "D:\openclaw"
 ```
 
 **Manual download:**
 ```powershell
-# Download zip from:
-# https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/openclaw-guard-kit-windows-x64.zip
+# Gitee:
+# https://gitee.com/sorry123luck/openclaw-guard-kit/releases/download/v.1.0.0/openclaw-guard-kit-windows-x64.zip
+# GitHub:
+# https://github.com/sorry123luck/openclaw-guard-kit/releases/download/v.1.0.0/openclaw-guard-kit-windows-x64.zip
 
 powershell -ExecutionPolicy Bypass -File ".\installer\install.ps1"
 ```
