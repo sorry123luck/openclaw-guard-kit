@@ -72,7 +72,7 @@ function Get-DownloadUrl {
   if ($Source -eq "gitee") {
     return "https://gitee.com/$RepoOwner/$RepoName/raw/main/releases/$Tag/$AssetName"
   } else {
-    return "https://cdn.jsdelivr.net/gh/$RepoOwner@$Tag/$AssetName"
+    return "https://cdn.jsdelivr.net/gh/$RepoOwner/$RepoName@$Tag/$AssetName"
   }
 }
 
@@ -134,18 +134,19 @@ Ensure-Directory $extractRoot
 $downloaded = $false
 $usedSource = $resolved.Source
 
-# Build ordered download URLs
+# Build ordered download URLs (3-source fallback)
 $downloadUrls = @()
 if ($PrimarySource -eq "gitee") {
   $downloadUrls = @(
-    @{ Source = "gitee"; Url = "https://gitee.com/$RepoOwner/$RepoName/raw/main/releases/$($resolved.Tag)/$AssetName" },
-    @{ Source = "jsdelivr"; Url = "https://cdn.jsdelivr.net/gh/$RepoOwner@$($resolved.Tag)/$AssetName" },
-    @{ Source = "github-direct"; Url = "https://github.com/$RepoOwner/$RepoName/releases/download/$($resolved.Tag)/$AssetName" }
+    @{ Source = "gitee";     Url = "https://gitee.com/$RepoOwner/$RepoName/raw/main/releases/$($resolved.Tag)/$AssetName" },
+    @{ Source = "jsdelivr"; Url = "https://cdn.jsdelivr.net/gh/$RepoOwner/$RepoName@$($resolved.Tag)/$AssetName" },
+    @{ Source = "github";    Url = "https://github.com/$RepoOwner/$RepoName/releases/download/$($resolved.Tag)/$AssetName" }
   )
 } else {
   $downloadUrls = @(
-    @{ Source = "jsdelivr"; Url = "https://cdn.jsdelivr.net/gh/$RepoOwner@$($resolved.Tag)/$AssetName" },
-    @{ Source = "github-direct"; Url = "https://github.com/$RepoOwner/$RepoName/releases/download/$($resolved.Tag)/$AssetName" }
+    @{ Source = "jsdelivr"; Url = "https://cdn.jsdelivr.net/gh/$RepoOwner/$RepoName@$($resolved.Tag)/$AssetName" },
+    @{ Source = "github";    Url = "https://github.com/$RepoOwner/$RepoName/releases/download/$($resolved.Tag)/$AssetName" },
+    @{ Source = "gitee";    Url = "https://gitee.com/$RepoOwner/$RepoName/raw/main/releases/$($resolved.Tag)/$AssetName" }
   )
 }
 
@@ -154,7 +155,7 @@ foreach ($entry in $downloadUrls) {
   $src = $entry.Source
   Write-Info "Trying $src : $url"
   try {
-    $testResp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15 -SkipHeaderValidation
+    $testResp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15
     if ($testResp.StatusCode -eq 200 -and $testResp.ContentLength -gt 1MB) {
       Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
       $downloaded = $true
