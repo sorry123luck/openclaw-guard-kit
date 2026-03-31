@@ -96,13 +96,24 @@ jobs:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           TAG: ${{ steps.info.outputs.tag }}
         run: |
+          set -e
+
+          OWNER="sorry123luck"
+          REPO="openclaw-guard-kit"
+
+          echo "Resolving Gitee release id from tag: $TAG"
+          RELEASE_JSON=$(curl --fail -s \
+            "https://gitee.com/api/v5/repos/${OWNER}/${REPO}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}")
+
+          RELEASE_ID=$(python3 -c "import sys, json; print(json.load(sys.stdin)['id'])" <<< "$RELEASE_JSON")
+          echo "Gitee release id: $RELEASE_ID"
+
           cd release-assets
           shopt -s nullglob
           for file in *; do
-            echo "Uploading $file to Gitee release $TAG"
-            curl --fail -X POST "https://gitee.com/api/v5/repos/sorry123luck/openclaw-guard-kit/releases/assets" \
-              -F "access_token=$GITEE_TOKEN" \
-              -F "tag_name=$TAG" \
-              -F "name=$file" \
-              -F "file=@$file"
+            echo "Uploading $file to Gitee release id $RELEASE_ID"
+            curl --fail -X POST \
+              "https://gitee.com/api/v5/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}/attach_files" \
+              -F "access_token=${GITEE_TOKEN}" \
+              -F "file=@${file}"
           done
