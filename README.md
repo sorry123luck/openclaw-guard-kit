@@ -37,7 +37,7 @@ irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install
 ```
 
 > 鍥介檯鐢ㄦ埛鍙娇鐢?GitHub锛堝浗鍐呰闂參锛夛細
-> `irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex`
+> `irm https://github.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex`
 
 - 瀹夎璺緞锛歚~/.openclaw-guard-kit/`
 - OpenClaw 璺緞锛歚~/.openclaw/`
@@ -166,12 +166,12 @@ guard.exe test-wecom-message --user-id <userId> --content <text>
 
 **鍥藉唴鐢ㄦ埛锛堜竴閿畨瑁咃級锛?*
 ```powershell
-irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
 ```
 
 **鍥介檯鐢ㄦ埛锛?*
 ```powershell
-irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex
+irm https://github.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
 ```
 
 **鍙傛暟锛?*
@@ -294,12 +294,12 @@ OpenClaw Guard Kit is a **Windows-only** external guardian and recovery tool for
 
 **Recommended (Gitee 鈥?fast in China):**
 ```powershell
-irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
 ```
 
 **International (GitHub):**
 ```powershell
-irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex
+irm https://github.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
 ```
 
 - Install dir: `~/.openclaw-guard-kit/`
@@ -346,19 +346,19 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\i
 
 **One-liner 鈥?Gitee (China, recommended):**
 ```powershell
-irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
 ```
 
 **One-liner 鈥?GitHub (international):**
 ```powershell
-irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex
+irm https://github.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
 ```
 
 Both installers automatically fall back to the other source if the primary is unavailable.
 
 **With custom paths:**
 ```powershell
-irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex `
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex `
   -InstallDir "D:\guard-kit" `
   -OpenClawRoot "D:\openclaw"
 ```

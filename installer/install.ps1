@@ -79,11 +79,9 @@ function Get-LatestTag {
 function Get-DownloadUrl {
   param([string]$Source, [string]$Tag)
   if ($Source -eq "gitee") {
-    # Gitee: raw file URL (large binary may be restricted by Gitee)
-    return "https://gitee.com/$RepoOwner/$RepoName/raw/main/releases/$Tag/$AssetName"
+    return "https://gitee.com/$RepoOwner/$RepoName/releases/download/$Tag/$AssetName"
   } else {
-    # jsDelivr CDN format: gh/owner/repo@tag/asset
-    return "https://cdn.jsdelivr.net/gh/$RepoOwner/$RepoName@$Tag/$AssetName"
+    return "https://github.com/$RepoOwner/$RepoName/releases/download/$Tag/$AssetName"
   }
 }
 
@@ -152,15 +150,13 @@ $usedSource = $resolved.Source
 $downloadUrls = @()
 if ($PrimarySource -eq "gitee") {
   $downloadUrls = @(
-    @{ Source = "gitee";      Url = "https://gitee.com/$RepoOwner/$RepoName/raw/main/releases/$($resolved.Tag)/$AssetName" },
-    @{ Source = "jsdelivr";  Url = "https://cdn.jsdelivr.net/gh/$RepoOwner/$RepoName@$($resolved.Tag)/$AssetName" },
+    @{ Source = "gitee";      Url = "https://gitee.com/$RepoOwner/$RepoName/releases/download/$($resolved.Tag)/$AssetName" },
     @{ Source = "github";     Url = "https://github.com/$RepoOwner/$RepoName/releases/download/$($resolved.Tag)/$AssetName" }
   )
 } else {
   $downloadUrls = @(
-    @{ Source = "jsdelivr";  Url = "https://cdn.jsdelivr.net/gh/$RepoOwner/$RepoName@$($resolved.Tag)/$AssetName" },
     @{ Source = "github";     Url = "https://github.com/$RepoOwner/$RepoName/releases/download/$($resolved.Tag)/$AssetName" },
-    @{ Source = "gitee";     Url = "https://gitee.com/$RepoOwner/$RepoName/raw/main/releases/$($resolved.Tag)/$AssetName" }
+    @{ Source = "gitee";     Url = "https://gitee.com/$RepoOwner/$RepoName/releases/download/$($resolved.Tag)/$AssetName" }
   )
 }
 
