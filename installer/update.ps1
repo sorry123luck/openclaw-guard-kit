@@ -153,14 +153,11 @@ foreach ($entry in $downloadUrls) {
   $src = $entry.Source
   Write-Info "Trying $src : $url"
   try {
-    $testResp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15
-    if ($testResp.StatusCode -eq 200 -and $testResp.ContentLength -gt 1MB) {
-      Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
-      $downloaded = $true
-      $usedSource = $src
-      Write-Info "Download succeeded from $src"
-      break
-    }
+    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -TimeoutSec 60
+    $downloaded = $true
+    $usedSource = $src
+    Write-Info "Download succeeded from $src"
+    break
   } catch {
     Write-Info "$src download attempt failed: $($_.Exception.Message)"
   }
