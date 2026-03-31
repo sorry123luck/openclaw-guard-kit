@@ -134,7 +134,7 @@ Ensure-Directory $extractRoot
 $downloaded = $false
 $usedSource = $resolved.Source
 
-# Build ordered download URLs (3-source fallback)
+# Build ordered download URLs (2-source fallback)
 $downloadUrls = @()
 if ($PrimarySource -eq "gitee") {
   $downloadUrls = @(
@@ -153,7 +153,7 @@ foreach ($entry in $downloadUrls) {
   $src = $entry.Source
   Write-Info "Trying $src : $url"
   try {
-    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -TimeoutSec 60
+    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -TimeoutSec 180
     $downloaded = $true
     $usedSource = $src
     Write-Info "Download succeeded from $src"
