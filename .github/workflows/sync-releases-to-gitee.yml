@@ -4,19 +4,18 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Download release assets
-        run: |
-          mkdir -p release-assets
-          for asset_url in ${{ toJson(github.event.release.assets.*.browser_download_url) }}; do
-            asset_name=$(basename "$asset_url")
-            curl -L -o "release-assets/$asset_name" "$asset_url" --header "Authorization: token ${{ secrets.GITHUB_TOKEN }}"
-          done
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout current GitHub repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Get release info
         id: info
@@ -24,18 +23,34 @@ jobs:
           echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
           echo "name=${{ github.event.release.name }}" >> $GITHUB_OUTPUT
 
-      - name: Push to Gitee
+      - name: Download release assets
+        env:
+          RELEASE_ASSETS_JSON: ${{ toJson(github.event.release.assets) }}
+        run: |
+          mkdir -p release-assets
+          python3 - <<'PY'
+          import json, os, subprocess
+
+          assets = json.loads(os.environ["RELEASE_ASSETS_JSON"])
+          for asset in assets:
+              url = asset["browser_download_url"]
+              name = asset["name"]
+              print(f"Downloading {name} from {url}")
+              subprocess.run(
+                  ["curl", "-L", "-o", f"release-assets/{name}", url],
+                  check=True
+              )
+          PY
+
+      - name: Push GitHub repo to Gitee
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-          TAG: ${{ steps.info.outputs.tag }}
         run: |
-          git clone --bare https://gitee.com/sorry123luck/openclaw-guard-kit.git gitee-mirror
-          cd gitee-mirror
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git push --mirror https://gitee.com/sorry123luck/openclaw-guard-kit.git
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
+
+          git remote add gitee https://oauth2:${GITEE_TOKEN}@gitee.com/sorry123luck/openclaw-guard-kit.git
+          git push --mirror gitee
 
       - name: Upload assets to Gitee Release
         env:
@@ -43,10 +58,11 @@ jobs:
           TAG: ${{ steps.info.outputs.tag }}
         run: |
           cd release-assets
+          shopt -s nullglob
           for file in *; do
-            curl -X POST "https://gitee.com/api/v5/repos/sorry123luck/openclaw-guard-kit/releases/assets" \
-              -H "Authorization: token $GITEE_TOKEN" \
-              -H "Content-Type: multipart/form-data" \
+            echo "Uploading $file to Gitee release $TAG"
+            curl --fail -X POST "https://gitee.com/api/v5/repos/sorry123luck/openclaw-guard-kit/releases/assets" \
+              -F "access_token=$GITEE_TOKEN" \
               -F "tag_name=$TAG" \
               -F "name=$file" \
               -F "file=@$file"
