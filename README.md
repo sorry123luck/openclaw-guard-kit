@@ -1,147 +1,185 @@
 # OpenClaw Guard Kit
 
-> 鏈枃妗ｇ敱 **openclaw-澶х铔?* 鎬荤粨涓婁紶銆?
+> 本文档由 **openclaw-大笨蛋** 总结上传。
+
 [![Platform](https://img.shields.io/badge/platform-Windows-blue?style=flat-square)](#)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.25+-blue?style=flat-square)](#寮€鍙?
+[![Go](https://img.shields.io/badge/Go-1.25+-blue?style=flat-square)](#开发)
 
 ---
 
-## 鐩綍锛堜腑鏂囷級
+## 目录（中文）
 
-- [蹇€熷紑濮媇(#蹇€熷紑濮?
-- [鍔熻兘姒傝](#鍔熻兘姒傝)
-- [缁勪欢鏋舵瀯](#缁勪欢鏋舵瀯)
-- [鍛戒护琛屾帴鍙(#鍛戒护琛屾帴鍙?
-- [杩滅▼瀹夎涓庡崌绾(#杩滅▼瀹夎涓庡崌绾?
-- [閰嶇疆璇存槑](#閰嶇疆璇存槑)
-- [杩愯鏃舵枃浠禲(#杩愯鏃舵枃浠?
-- [寮€鍙慮(#寮€鍙?
+- [快速开始](#快速开始)
+- [功能概览](#功能概览)
+- [组件架构](#组件架构)
+- [命令行接口](#命令行接口)
+- [远程安装与升级](#远程安装与升级)
+- [配置说明](#配置说明)
+- [运行时文件](#运行时文件)
+- [开发](#开发)
 
-> 馃殌 English documentation: [Jump to English](#english-documentation)
+> 🚀 English documentation: [Jump to English](#english-documentation)
 
 ---
 
-## 蹇€熷紑濮?
-### 鍓嶇疆瑕佹眰
+## 快速开始
 
-- Windows 鎿嶄綔绯荤粺
-- 宸插畨瑁?[OpenClaw](https://github.com/openclaw/openclaw)
+### 前置要求
+
+- Windows 操作系统
+- 已安装 [OpenClaw](https://github.com/openclaw/openclaw)
 - PowerShell 5.0+
 
-### 涓€閿畨瑁?
-浠?Gitee锛堝浗鍐呴暅鍍忥級鑷姩涓嬭浇骞跺畨瑁呮渶鏂扮増鏈細
+### 一键安装
+
+从 Gitee（国内镜像）自动下载并安装最新版本：
 
 ```powershell
-irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/free/main/scripts/install.ps1 | iex
 ```
 
-> 鍥介檯鐢ㄦ埛鍙娇鐢?GitHub锛堝浗鍐呰闂參锛夛細
+> 国际用户可使用 GitHub（国内访问慢）：
 > `irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex`
 
-- 瀹夎璺緞锛歚~/.openclaw-guard-kit/`
-- OpenClaw 璺緞锛歚~/.openclaw/`
+- 安装路径：`~/.openclaw-guard-kit/`
+- OpenClaw 路径：`~/.openclaw/`
 
-瀹夎瀹屾垚鍚庯細
-- `guard-detector.exe` 鑷姩娉ㄥ唽涓哄紑鏈鸿嚜鍚姩
-- `guard-ui.exe` 鍦ㄧ郴缁熸墭鐩樿繍琛?- 妫€娴嬪埌 OpenClaw 涓婄嚎鍚庤嚜鍔ㄦ媺璧峰畧鎶ょ▼搴?
-### 鍗囩骇
+安装完成后：
+- `guard-detector.exe` 自动注册为开机自启动
+- `guard-ui.exe` 在系统托盘运行
+- 检测到 OpenClaw 上线后自动拉起守护程序
+
+### 升级
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\installer\update.ps1"
 ```
 
-### 鍗歌浇
+### 卸载
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\installer\uninstall.ps1"
 ```
 
-鍔?`-RemoveInstallDir` 鍙悓鏃跺垹闄ゅ畨瑁呯洰褰曟湰韬€?
+加 `-RemoveInstallDir` 可同时删除安装目录本身。
+
 ---
 
-## 鍔熻兘姒傝
+## 功能概览
 
-### 1. 鐢熷懡鍛ㄦ湡鐩戞帶
+### 1. 生命周期监控
 
-`guard-detector.exe` 鎸佺画妫€娴?OpenClaw 鍦ㄧ嚎鐘舵€侊細
+`guard-detector.exe` 持续检测 OpenClaw 在线状态：
 
-| OpenClaw 鐘舵€?| 琛屼负 |
+| OpenClaw 状态 | 行为 |
 |---------------|------|
-| 鍦ㄧ嚎 | 鑷姩纭繚 `guard.exe` 鍜?`guard-ui.exe` 杩愯 |
-| 绂荤嚎纭 | 鑷姩鍋滄 guard 鍜?UI锛屽彂閫佺绾块€氱煡 |
-| 杩滅▼鍚姩鍛戒护 | 杩涘叆 30 绉掑揩閫熸帰娴嬬獥鍙ｏ紝姣忕鎺㈡祴涓€娆?|
+| 在线 | 自动确保 `guard.exe` 和 `guard-ui.exe` 运行 |
+| 离线确认 | 自动停止 guard 和 UI，发送离线通知 |
+| 远程启动命令 | 进入 30 秒快速探测窗口，每秒探测一次 |
 
-### 2. 閰嶇疆鏂囦欢淇濇姢
+### 2. 配置文件保护
 
-`guard.exe` 鐩戞帶 OpenClaw 鍏抽敭閰嶇疆鏂囦欢锛?
+`guard.exe` 监控 OpenClaw 关键配置文件：
+
 ```
-鏂囦欢鍙樺寲 鈫?绋冲畾绛夊緟锛?s锛夆啋 鍒涘缓鍊欓€夊揩鐓?鈫?鍋ュ悍妫€鏌?鈫?Doctor 璇婃柇 鈫?鍒ゅ畾澶勭悊鏂瑰紡
+文件变化 → 稳定等待（5s）→ 创建候选快照 → 健康检查 → Doctor 诊断 → 判定处理方式
 ```
 
-| 鍒ゅ畾缁撴灉 | 澶勭悊 |
+| 判定结果 | 处理 |
 |----------|------|
-| 閰嶇疆姝ｅ父 | 鍊欓€夊崌鏍间负鍙俊鍩虹嚎 |
-| 杩愯鏃跺紓甯?| 绛夊緟鑷剤锛屼笉鍥炴粴 |
-| 纭晠闅?| 鑷姩鍥炴粴鍒颁笂涓€涓彲淇＄増鏈?|
+| 配置正常 | 候选升格为可信基线 |
+| 运行时异常 | 等待自愈，不回滚 |
+| 硬故障 | 自动回滚到上一个可信版本 |
 
-**鍙椾繚鎶ゆ枃浠讹細**
+**受保护文件：**
 
-- `openclaw.json`锛堝綊涓€鍖栨瘮杈冿紝蹇界暐杩愯鏃跺瓧娈碉級
-- `auth-profiles.json`锛堜粎姣旇緝 version + profiles锛?- `models.json`锛堝彲閫夛級
+- `openclaw.json`（归一化比较，忽略运行时字段）
+- `auth-profiles.json`（仅比较 version + profiles）
+- `models.json`（可选）
 
-### 3. 閫氱煡涓庤繙绋嬪懡浠?
-涓変釜骞冲彴閫氶亾锛屾瘡涓€氶亾鐙珛鎺у埗閫氱煡寮€鍏冲拰杩滅▼鍛戒护鏉冮檺锛?
-| 骞冲彴 | 鍑瘉 | 缁戝畾鏂瑰紡 |
+### 3. 通知与远程命令
+
+三个平台通道，每个通道独立控制通知开关和远程命令权限：
+
+| 平台 | 凭证 | 绑定方式 |
 |------|------|----------|
-| Telegram | Bot Token | 鏈哄櫒浜轰細璇濈粦瀹?|
-| 椋炰功 | App ID + App Secret | 搴旂敤娑堟伅缁戝畾 |
-| 浼佷笟寰俊 | Corp ID + Agent ID + Secret | 浼佷笟搴旂敤浼氳瘽缁戝畾 |
+| Telegram | Bot Token | 机器人会话绑定 |
+| 飞书 | App ID + App Secret | 应用消息绑定 |
+| 企业微信 | Corp ID + Agent ID + Secret | 企业应用会话绑定 |
 
-宸茬粦瀹氱敤鎴峰彲鍙戦€佽繙绋嬪懡浠わ細
+已绑定用户可发送远程命令：
 
-- `鍚姩openclaw`
-- `閲嶅惎openclaw`
+- `启动openclaw`
+- `重启openclaw`
 
 ---
 
-## 缁勪欢鏋舵瀯
+## 组件架构
 
 ```
-鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?                 鐢ㄦ埛 / 鏈哄櫒浜?                        鈹?鈹?             (Telegram 路 椋炰功 路 浼佷笟寰俊)            鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?                       鈹?杩滅▼鍛戒护 / 閫氱煡
-鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈻尖攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?                guard-detector.exe                     鈹?鈹? 鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?鈹? 鈹? 鐢熷懡鍛ㄦ湡鐩戞帶  鈹?鈹? 杩滅▼鍛戒护澶勭悊  鈹?鈹? 蹇€熸帰娴嬬獥鍙? 鈹?鈹?鈹? 鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?鈹?        鈹?               鈹?                 鈹?         鈹?鈹?   OpenClaw 鍦ㄧ嚎     缁戝畾鏍￠獙          30s/1s 鎺㈡祴     鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?          鈹?鎷夎捣 / 鍋滄                      鈹?TCP 鎺㈡祴
-鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈻尖攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈻尖攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?                     guard.exe                          鈹?鈹? 鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹? 鈹?鈹? 鈹?  鏂囦欢鐩戞帶    鈹?鈹?ReviewWorker 鈹?鈹?Backup Service 鈹? 鈹?鈹? 鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹? 鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?          鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈻尖攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹?                guard-ui.exe锛堟墭鐩橈級                        鈹?鈹?  detector / guard / gateway 涓夊眰鐘舵€?路 鍑瘉绠＄悊 路 缁戝畾绠＄悊   鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?```
+┌─────────────────────────────────────────────────────┐
+│                  用户 / 机器人                         │
+│              (Telegram · 飞书 · 企业微信)            │
+└──────────────────────┬────────────────────────────────┘
+                       │ 远程命令 / 通知
+┌──────────────────────▼────────────────────────────────┐
+│                 guard-detector.exe                     │
+│  ┌──────────────┐ ┌──────────────┐ ┌───────────────┐ │
+│  │  生命周期监控  │ │  远程命令处理  │ │  快速探测窗口  │ │
+│  └──────────────┘ └──────────────┘ └───────────────┘ │
+│         │                │                  │          │
+│    OpenClaw 在线     绑定校验          30s/1s 探测     │
+└─────────┬──────────────────────────────────┬────────────┘
+          │ 拉起 / 停止                      │ TCP 探测
+┌─────────▼──────────────────────────────────▼────────────┐
+│                      guard.exe                          │
+│  ┌──────────────┐ ┌──────────────┐ ┌───────────────┐  │
+│  │   文件监控    │ │ ReviewWorker │ │ Backup Service │  │
+│  └──────────────┘ └──────────────┘ └───────────────┘  │
+└─────────────────────────────────────────────────────────┘
+          │
+┌─────────▼──────────────────────────────────────────────────┐
+│                 guard-ui.exe（托盘）                        │
+│   detector / guard / gateway 三层状态 · 凭证管理 · 绑定管理   │
+└────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 鍛戒护琛屾帴鍙?
-> 浠ヤ笅鍒楀嚭 `guard.exe` 鐨勫父鐢ㄥ瓙鍛戒护锛沗guard-detector.exe` 閫氬父鐢卞畨瑁呭櫒/鑷惎鍔ㄦ祦绋嬬鐞嗭紝鏅€氱敤鎴蜂竴鑸棤闇€鎵嬪姩璋冪敤銆?
-### 鏍稿績鍛戒护
+## 命令行接口
 
-| 鍛戒护 | 璇存槑 |
+> 以下列出 `guard.exe` 的常用子命令；`guard-detector.exe` 通常由安装器/自启动流程管理，普通用户一般无需手动调用。
+
+### 核心命令
+
+| 命令 | 说明 |
 |------|------|
-| `guard.exe watch` | 鍚姩閰嶇疆鏂囦欢鐩戞帶寰幆 |
-| `guard.exe prepare` | 鐢熸垚鍙俊鍩虹嚎蹇収锛坢anifest.json锛?|
-| `guard.exe status` | 鏌ョ湅褰撳墠 guard 杩愯鐘舵€?|
-| `guard.exe stop` | 鍋滄 watch 寰幆 |
+| `guard.exe watch` | 启动配置文件监控循环 |
+| `guard.exe prepare` | 生成可信基线快照（manifest.json） |
+| `guard.exe status` | 查看当前 guard 运行状态 |
+| `guard.exe stop` | 停止 watch 循环 |
 
-### 鍊欓€夌鐞嗗懡浠?
-| 鍛戒护 | 璇存槑 |
+### 候选管理命令
+
+| 命令 | 说明 |
 |------|------|
-| `guard.exe candidate-status` | 鏌ョ湅褰撳墠鍊欓€夌姸鎬?|
-| `guard.exe promote-candidate` | 灏嗗€欓€夊崌鏍间负鍙俊 |
-| `guard.exe discard-candidate` | 涓㈠純褰撳墠鍊欓€?|
-| `guard.exe mark-bad-candidate` | 鏍囪鍊欓€変负鍧忓苟褰掓。 |
-| `guard.exe retry-candidate` | 閲嶆柊瀹℃煡褰撳墠鍊欓€?|
+| `guard.exe candidate-status` | 查看当前候选状态 |
+| `guard.exe promote-candidate` | 将候选升格为可信 |
+| `guard.exe discard-candidate` | 丢弃当前候选 |
+| `guard.exe mark-bad-candidate` | 标记候选为坏并归档 |
+| `guard.exe retry-candidate` | 重新审查当前候选 |
 
-### Telegram 鍑瘉涓庣粦瀹?
+### Telegram 凭证与绑定
+
 ```bash
 guard.exe save-telegram-credentials --token <bot-token>
 guard.exe complete-telegram-binding --chat-id <chatId>
 guard.exe unbind-telegram
 ```
 
-### 椋炰功鍑瘉涓庣粦瀹?
+### 飞书凭证与绑定
+
 ```bash
 guard.exe save-feishu-credentials --app-id <appId> --app-secret <secret>
 guard.exe complete-feishu-binding --open-id <openId>
@@ -149,7 +187,8 @@ guard.exe unbind-feishu
 guard.exe test-feishu-message --open-id <openId> --content <text>
 ```
 
-### 浼佷笟寰俊鍑瘉涓庣粦瀹?
+### 企业微信凭证与绑定
+
 ```bash
 guard.exe save-wecom-credentials --corp-id <corpId> --agent-id <agentId> --secret <secret>
 guard.exe test-wecom-connection
@@ -160,123 +199,138 @@ guard.exe test-wecom-message --user-id <userId> --content <text>
 
 ---
 
-## 杩滅▼瀹夎涓庡崌绾?
-> 瀹夎鍣ㄩ粯璁や紭鍏堜粠 **Gitee** 涓嬭浇锛孏itee 涓嶅彲鐢ㄦ椂鑷姩鍒囨崲鍒?**GitHub**锛屾棤闇€鎵嬪姩骞查銆?
-### 杩滅▼瀹夎锛堟湰鍦版墽琛岋級
+## 远程安装与升级
 
-**鍥藉唴鐢ㄦ埛锛堜竴閿畨瑁咃級锛?*
+> 安装器默认优先从 **Gitee** 下载，Gitee 不可用时自动切换到 **GitHub**，无需手动干预。
+
+### 远程安装（本地执行）
+
+**国内用户（一键安装）：**
 ```powershell
-irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
 ```
 
-**鍥介檯鐢ㄦ埛锛?*
+**国际用户：**
 ```powershell
 irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex
 ```
 
-**鍙傛暟锛?*
+**参数：**
 
-| 鍙傛暟 | 榛樿鍊?| 璇存槑 |
+| 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `-InstallDir` | `~/.openclaw-guard-kit/` | 瀹夎鐩綍 |
-| `-OpenClawRoot` | `~/.openclaw/` | OpenClaw 鏍圭洰褰?|
-| `-PrimarySource` | `gitee` | 棣栭€夋簮锛屽彲閫?`github` |
+| `-InstallDir` | `~/.openclaw-guard-kit/` | 安装目录 |
+| `-OpenClawRoot` | `~/.openclaw/` | OpenClaw 根目录 |
+| `-PrimarySource` | `gitee` | 首选源，可选 `github` |
 
-### 杩滅▼鍗囩骇
+### 远程升级
 
-鍗囩骇鑴氭湰鍚屾牱鏀寔鍙屾簮鑷姩鍥為€€锛?```powershell
+升级脚本同样支持双源自动回退：
+```powershell
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\installer\update.ps1"
 ```
 
-鏀寔鍙傛暟锛歚-InstallDir` / `-PrimarySource gitee|github`
+支持参数：`-InstallDir` / `-PrimarySource gitee|github`
 
-### 鎵嬪姩涓嬭浇瀹夎
+### 手动下载安装
 
-閫傜敤浜庢棤娉曟墽琛岃繙绋?PowerShell 鑴氭湰鐨勫満鏅細
+适用于无法执行远程 PowerShell 脚本的场景：
 
 ```powershell
-# 1. 涓嬭浇鏈€鏂?zip
+# 1. 下载最新 zip
 # https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/openclaw-guard-kit-windows-x64.zip
 
-# 2. 瑙ｅ帇鍚庢湰鍦板畨瑁?powershell -ExecutionPolicy Bypass -File ".\installer\install.ps1"
+# 2. 解压后本地安装
+powershell -ExecutionPolicy Bypass -File ".\installer\install.ps1"
 ```
 
 ---
 
-## 閰嶇疆璇存槑
+## 配置说明
 
-### guard-detector 涓昏鍙傛暟
+### guard-detector 主要参数
 
-| 鍙傛暟 | 榛樿鍊?| 璇存槑 |
+| 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--openclaw-path` | 绯荤粺 PATH 涓殑 openclaw | openclaw.exe 璺緞 |
-| `--root` | `~/.openclaw/` | OpenClaw 鏍圭洰褰?|
+| `--openclaw-path` | 系统 PATH 中的 openclaw | openclaw.exe 路径 |
+| `--root` | `~/.openclaw/` | OpenClaw 根目录 |
 | `--agent` | `main` | Agent ID |
-| `--gateway-port` | 0锛堣嚜鍔ㄥ彂鐜帮級 | 鍥哄畾 gateway 绔彛锛?=鑷姩 |
-| `--probe-interval` | 5 绉?| 鎺㈡祴闂撮殧 |
-| `--startup-protect` | 20 绉?| 鍚姩淇濇姢绐楀彛 |
-| `--offline-grace` | 90 绉?| 绂荤嚎瀹介檺鏈?|
-| `--restart-cooldown` | 45 绉?| 閲嶅惎鍐峰嵈鏃堕棿 |
-| `--healthy-confirm` | 2 娆?| 鍦ㄧ嚎纭娆℃暟 |
-| `--unhealthy-confirm` | 3 娆?| 绂荤嚎纭娆℃暟 |
+| `--gateway-port` | 0（自动发现） | 固定 gateway 端口，0=自动 |
+| `--probe-interval` | 5 秒 | 探测间隔 |
+| `--startup-protect` | 20 秒 | 启动保护窗口 |
+| `--offline-grace` | 90 秒 | 离线宽限期 |
+| `--restart-cooldown` | 45 秒 | 重启冷却时间 |
+| `--healthy-confirm` | 2 次 | 在线确认次数 |
+| `--unhealthy-confirm` | 3 次 | 离线确认次数 |
 
-### 閫氶亾鏉冮檺鎺у埗
+### 通道权限控制
 
-姣忎釜宸茬粦瀹氶€氶亾鐙珛鎺у埗锛?
-| 寮€鍏?| 璇存槑 |
+每个已绑定通道独立控制：
+
+| 开关 | 说明 |
 |------|------|
-| `notifyEnabled` | 鏄惁鎺ユ敹閫氱煡 |
-| `remoteCommandEnabled` | 鏄惁鍏佽杩滅▼鍛戒护 |
+| `notifyEnabled` | 是否接收通知 |
+| `remoteCommandEnabled` | 是否允许远程命令 |
 
 ---
 
-## 杩愯鏃舵枃浠?
-绋嬪簭杩愯鍚庡湪 OpenClaw 鏍圭洰褰曚笅鐢熸垚锛?
+## 运行时文件
+
+程序运行后在 OpenClaw 根目录下生成：
+
 ```
 <OpenClawRoot>\
-鈹溾攢鈹€ .guard-state\
-鈹?  鈹溾攢鈹€ manifest.json           # 蹇収娓呭崟锛圱rusted + Candidate锛?鈹?  鈹溾攢鈹€ detector-status.json    # detector 鐘舵€?鈹?  鈹溾攢鈹€ gateway-port-cache.json # gateway 绔彛缂撳瓨
-鈹?  鈹溾攢鈹€ startup-protect.json    # 鍚姩淇濇姢绐楀彛
-鈹?  鈹斺攢鈹€ logs\
-鈹?      鈹斺攢鈹€ doctor-*.log        # Doctor 璇婃柇鏃ュ織
-鈹斺攢鈹€ .offline                    # 绂荤嚎鏍囪锛堟墜鍔ㄦ斁缃彲寮哄埗绂荤嚎锛?```
+├── .guard-state\
+│   ├── manifest.json           # 快照清单（Trusted + Candidate）
+│   ├── detector-status.json    # detector 状态
+│   ├── gateway-port-cache.json # gateway 端口缓存
+│   ├── startup-protect.json    # 启动保护窗口
+│   └── logs\
+│       └── doctor-*.log        # Doctor 诊断日志
+└── .offline                    # 离线标记（手动放置可强制离线）
+```
 
 ---
 
-## 寮€鍙?
-### 椤圭洰缁撴瀯
+## 开发
+
+### 项目结构
 
 ```
 openclaw-guard-kit/
-鈹溾攢鈹€ cmd/
-鈹?  鈹溾攢鈹€ guard/                  # guard 涓荤▼搴?鈹?  鈹溾攢鈹€ guard-detector/         # detector 涓荤▼搴?鈹?  鈹斺攢鈹€ guard-ui/               # UI 绋嬪簭锛堟墭鐩橈級
-鈹溾攢鈹€ internal/
-鈹?  鈹溾攢鈹€ review/                 # 鍊欓€夊鏌?Worker
-鈹?  鈹溾攢鈹€ protocol/               # 鍗忚绫诲瀷瀹氫箟
-鈹?  鈹斺攢鈹€ ...
-鈹溾攢鈹€ notify/                    # 閫氱煡閫氶亾锛圱elegram / 椋炰功 / 浼佷笟寰俊锛?鈹溾攢鈹€ backup/                    # 蹇収绠＄悊
-鈹溾攢鈹€ watch/                     # 鏂囦欢鐩戞帶鏈嶅姟
-鈹溾攢鈹€ gateway/                   # Named Pipe IPC
-鈹溾攢鈹€ config/                    # 閰嶇疆瑙ｆ瀽
-鈹斺攢鈹€ dist/.../installer/        # 鎵撳寘鍚庣殑瀹夎鑴氭湰
+├── cmd/
+│   ├── guard/                  # guard 主程序
+│   ├── guard-detector/         # detector 主程序
+│   └── guard-ui/               # UI 程序（托盘）
+├── internal/
+│   ├── review/                 # 候选审查 Worker
+│   ├── protocol/               # 协议类型定义
+│   └── ...
+├── notify/                    # 通知通道（Telegram / 飞书 / 企业微信）
+├── backup/                    # 快照管理
+├── watch/                     # 文件监控服务
+├── gateway/                   # Named Pipe IPC
+├── config/                    # 配置解析
+└── dist/.../installer/        # 打包后的安装脚本
 ```
 
-### 鎶€鏈爤
+### 技术栈
 
 - Go 1.25+
-- `github.com/Microsoft/go-winio` 鈥?Windows Named Pipe
-- `github.com/larksuite/oapi-sdk-go/v3` 鈥?椋炰功 SDK
-- `github.com/lxn/walk` 鈥?Windows GUI
+- `github.com/Microsoft/go-winio` — Windows Named Pipe
+- `github.com/larksuite/oapi-sdk-go/v3` — 飞书 SDK
+- `github.com/lxn/walk` — Windows GUI
 
 ---
 
-> 馃憜 [杩斿洖涓枃鐩綍](#鐩綍涓枃)
+> 👆 [返回中文目录](#目录中文)
 
 ---
 
 ## English Documentation
 
-> 鏈珷鑺傜敱 openclaw-澶х铔?鏁寸悊銆?
+> 本章节由 openclaw-大笨蛋 整理。
+
 ### Overview
 
 OpenClaw Guard Kit is a **Windows-only** external guardian and recovery tool for OpenClaw. It runs as independent processes and does not modify OpenClaw's source code.
@@ -292,9 +346,9 @@ OpenClaw Guard Kit is a **Windows-only** external guardian and recovery tool for
 
 > The installer automatically falls back to GitHub if Gitee is unavailable.
 
-**Recommended (Gitee 鈥?fast in China):**
+**Recommended (Gitee — fast in China):**
 ```powershell
-irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
 ```
 
 **International (GitHub):**
@@ -329,10 +383,10 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\i
 ### CLI Subcommands
 
 **Core:**
-- `guard.exe watch` 鈥?Start file monitoring loop
-- `guard.exe prepare` 鈥?Generate trusted baseline snapshots
-- `guard.exe status` 鈥?Show current guard status
-- `guard.exe stop` 鈥?Stop watch loop
+- `guard.exe watch` — Start file monitoring loop
+- `guard.exe prepare` — Generate trusted baseline snapshots
+- `guard.exe status` — Show current guard status
+- `guard.exe stop` — Stop watch loop
 
 **Candidate management:**
 - `candidate-status` / `promote-candidate` / `discard-candidate` / `mark-bad-candidate` / `retry-candidate`
@@ -344,12 +398,12 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.openclaw-guard-kit\i
 
 ### Remote Install Options
 
-**One-liner 鈥?Gitee (China, recommended):**
+**One-liner — Gitee (China, recommended):**
 ```powershell
-irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex
 ```
 
-**One-liner 鈥?GitHub (international):**
+**One-liner — GitHub (international):**
 ```powershell
 irm https://github.com/sorry123luck/openclaw-guard-kit/releases/latest/download/install.ps1 | iex
 ```
@@ -358,7 +412,7 @@ Both installers automatically fall back to the other source if the primary is un
 
 **With custom paths:**
 ```powershell
-irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/installer/install.ps1 | iex `
+irm https://gitee.com/sorry123luck/openclaw-guard-kit/raw/main/scripts/install.ps1 | iex `
   -InstallDir "D:\guard-kit" `
   -OpenClawRoot "D:\openclaw"
 ```
@@ -377,12 +431,12 @@ powershell -ExecutionPolicy Bypass -File ".\installer\install.ps1"
 
 ```
 <OpenClawRoot>\.guard-state\
-鈹溾攢鈹€ manifest.json           # Snapshot manifest (Trusted + Candidate)
-鈹溾攢鈹€ detector-status.json    # Detector state
-鈹溾攢鈹€ gateway-port-cache.json # Cached gateway port
-鈹溾攢鈹€ startup-protect.json   # Startup protection window
-鈹斺攢鈹€ logs\
-    鈹斺攢鈹€ doctor-*.log        # Doctor diagnosis logs
+├── manifest.json           # Snapshot manifest (Trusted + Candidate)
+├── detector-status.json    # Detector state
+├── gateway-port-cache.json # Cached gateway port
+├── startup-protect.json   # Startup protection window
+└── logs\
+    └── doctor-*.log        # Doctor diagnosis logs
 ```
 
 ### License
