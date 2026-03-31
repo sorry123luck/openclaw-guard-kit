@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "要同步的 Release 标签，比如 v.1.0.1"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,27 +25,59 @@ jobs:
 
       - name: Get release info
         id: info
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          echo "name=${{ github.event.release.name }}" >> $GITHUB_OUTPUT
+          if [ "$EVENT_NAME" = "release" ]; then
+            echo "tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+            echo "Using release event tag: $RELEASE_TAG"
+          else
+            echo "tag=$INPUT_TAG" >> $GITHUB_OUTPUT
+            echo "Using manual input tag: $INPUT_TAG"
+          fi
 
       - name: Download release assets
         env:
-          RELEASE_ASSETS_JSON: ${{ toJson(github.event.release.assets) }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.info.outputs.tag }}
         run: |
           mkdir -p release-assets
           python3 - <<'PY'
-          import json, os, subprocess
+          import json
+          import os
+          import urllib.request
 
-          assets = json.loads(os.environ["RELEASE_ASSETS_JSON"])
+          repo = os.environ["REPO"]
+          tag = os.environ["TAG"]
+          token = os.environ["GH_TOKEN"]
+
+          api_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+          req = urllib.request.Request(
+              api_url,
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json"
+              }
+          )
+
+          with urllib.request.urlopen(req) as resp:
+              release = json.load(resp)
+
+          assets = release.get("assets", [])
+          if not assets:
+              raise SystemExit(f"No assets found for release tag: {tag}")
+
           for asset in assets:
-              url = asset["browser_download_url"]
               name = asset["name"]
+              url = asset["browser_download_url"]
               print(f"Downloading {name} from {url}")
-              subprocess.run(
-                  ["curl", "-L", "-o", f"release-assets/{name}", url],
-                  check=True
-              )
+
+              dl_req = urllib.request.Request(url)
+              with urllib.request.urlopen(dl_req) as dl_resp, open(f"release-assets/{name}", "wb") as f:
+                  f.write(dl_resp.read())
           PY
 
       - name: Push GitHub repo to Gitee
