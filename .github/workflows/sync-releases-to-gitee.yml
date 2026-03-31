@@ -80,14 +80,15 @@ jobs:
                   f.write(dl_resp.read())
           PY
 
-      - name: Push GitHub repo to Gitee
+        - name: Push GitHub repo to Gitee
         env:
+          GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git remote add gitee https://oauth2:${GITEE_TOKEN}@gitee.com/sorry123luck/openclaw-guard-kit.git
+          git remote add gitee https://${GITEE_USERNAME}:${GITEE_TOKEN}@gitee.com/sorry123luck/openclaw-guard-kit.git
           git push --mirror gitee
 
       - name: Upload assets to Gitee Release
